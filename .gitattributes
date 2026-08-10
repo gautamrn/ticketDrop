@@ -1,0 +1,8 @@
+# Normalize to LF in the repository. Without this, editing on Windows produces
+# CRLF files that gofmt reports as unformatted and that show up as whole-file
+# diffs for anyone on Linux or macOS.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

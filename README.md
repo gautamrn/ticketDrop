@@ -67,15 +67,17 @@ docker compose down -v; docker compose up -d
 | Phase | Deliverable | Status |
 | --- | --- | --- |
 | 1 | Rules, architecture, compose stack, pgvector schema | done |
-| 2a | Go ingest: EDMTrain discovery adapter + Redis `XADD` | next |
-| 2b | Go ingest: RA availability adapter, diff engine, watchlist scheduler | |
+| 2a | Go ingest: EDMTrain discovery adapter + Redis `XADD` | done |
+| 2b | Go ingest: RA availability adapter, diff engine, watchlist scheduler | next |
 | 3 | Python harness: LangGraph FSM, hype scoring, Playwright | |
 | 4 | Self-healing DOM repair loop | |
 | 5 | Next.js admin panel over the results stream | |
 
-Phase 2a needs an EDMTrain client API key, which you apply for while signed in
-at [edmtrain.com/developer-api](https://edmtrain.com/developer-api). Nothing in
-the discovery tier runs without it.
+Running the discovery tier against the live API needs an EDMTrain client key,
+which you apply for while signed in at
+[edmtrain.com/developer-api](https://edmtrain.com/developer-api). Until it
+arrives, `ingest-service/cmd/mock-edmtrain` serves the same contract locally —
+see [`ingest-service/README.md`](./ingest-service/README.md).
 
 ## Going public
 

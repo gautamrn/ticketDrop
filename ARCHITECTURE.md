@@ -400,8 +400,8 @@ we have explicit permission to use.
 | Phase | Deliverable | Status |
 | --- | --- | --- |
 | **1** | Rules, this document, `docker-compose`, pgvector schema, observability scaffolding | **done** |
-| 2a | Go ingest: EDMTrain discovery adapter, `createdStartDate` cursor, `XADD` | next — needs `EDMTRAIN_API_KEY` |
-| 2b | Go ingest: RA availability adapter, fingerprint diff engine, watchlist scheduler, Prometheus metrics | |
+| **2a** | Go ingest: EDMTrain discovery adapter, `createdStartDate` cursor, `XADD`, Prometheus metrics | **done** — mock server included; live run needs `EDMTRAIN_API_KEY` |
+| 2b | Go ingest: RA availability adapter, fingerprint diff engine, watchlist scheduler, bounded worker pool | next |
 | 3 | Python harness: LangGraph FSM, hype scoring, Playwright stage | |
 | 4 | Self-healing AST repair loop | |
 | 5 | Next.js admin panel over the results stream | |

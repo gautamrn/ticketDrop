@@ -146,6 +146,20 @@ CREATE TABLE event_artists (
 );
 
 
+-- ------------------------------------------------------------- ingest state
+
+-- How far each adapter has consumed. This is a performance optimization, not
+-- a correctness mechanism: dedupe is enforced by UNIQUE (source,
+-- source_event_id) on events, so re-fetching an overlapping window is free.
+-- That property is what lets the poller use a generous safety overlap without
+-- risking duplicate announcements.
+CREATE TABLE ingest_watermarks (
+    source     source_platform PRIMARY KEY,
+    cursor_at  timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+
 -- ------------------------------------------------------------ availability
 
 -- Ingestion is two-tier. The discovery tier (EDMTrain, ~60 s) answers "what
