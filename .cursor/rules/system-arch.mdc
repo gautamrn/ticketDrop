@@ -1,0 +1,64 @@
+---
+description: TicketDrop Architecture & Stack Boundaries
+globs: **/*
+alwaysApply: true
+---
+
+# TicketDrop — Architectural Boundaries
+
+Read `ARCHITECTURE.md` before proposing cross-service changes.
+
+## Service ownership
+
+- `ingest-service/` — **Go 1.25**, Fiber. Owns all outbound polling of ticketing
+  sources and all writes to the Redis Stream. Never imports Python, never drives
+  a browser, never calls an LLM.
+- `agent-harness/` — **Python 3.12+**, LangGraph, async Playwright. Owns the
+  finite state machine, hype evaluation, and browser execution. Only reads from
+  the Redis Stream via a consumer group; never polls a ticketing source directly.
+- `admin-panel/` — **Next.js (App Router)**, Tailwind, WebSockets. Read-only over
+  the pipeline plus manual overrides. Contains no business logic that the harness
+  needs to make a decision.
+- `db/` — schema is the contract between services. Any column added for one
+  service must be documented in `ARCHITECTURE.md`.
+
+## Hard boundaries
+
+- Redis Streams is the **only** channel between ingestion and the harness. No
+  direct HTTP calls, no shared in-process state.
+- The Go service is the only writer to `ticket:drops`. The harness is the only
+  writer to `ticket:drops:results`.
+- Postgres is the durable record. Redis holds the event log and caches only
+  (selector overrides, dedupe sets); losing Redis must never lose a decision.
+- Secrets come from the environment. Never inline a token, cookie, or API key.
+
+## Latency discipline
+
+- Ingestion poll → stream append: **p99 < 50 ms** (excluding network RTT to the
+  source).
+- Every stage records a span and writes a row to `drop_transitions` with its
+  measured `latency_ms`. A stage that cannot be measured cannot be optimized.
+- Any blocking call inside a Goroutine or coroutine needs an explicit timeout.
+  Unbounded `await` / channel receive is a review failure.
+
+## Testing
+
+- Go: **table-driven tests** (`tests := []struct{name string; ...}`) with
+  `t.Run(tt.name, ...)`. Use `miniredis` for stream assertions, not a live Redis.
+- Python: **pytest** specs, `pytest-asyncio` for coroutines. Every FSM node gets
+  a test that asserts its output state and that it terminates.
+- Anything touching the network in a test must be faked or recorded.
+
+## Source adapters
+
+- New ticketing sources implement the `SourceAdapter` interface described in
+  `ARCHITECTURE.md`. Do not special-case a vendor inside the polling loop.
+- Ingestion is two-tier: **discovery** (EDMTrain, ~60 s, server-side change feed
+  via `createdStartDate`) and **availability** (RA, ~2 s, fingerprint diff,
+  watchlisted events only). An adapter belongs to exactly one tier.
+- Respect each source's `robots.txt`, rate limits, and Terms of Service. Never
+  add code whose purpose is to defeat a CAPTCHA, a Queue-it waiting room, or a
+  per-account purchase limit.
+- EDMTrain specifically: one key, one sequential loop, no parallel fan-out, no
+  burst retries. Its event link must be rendered unmodified wherever an event is
+  displayed. See `ARCHITECTURE.md` §10.1.

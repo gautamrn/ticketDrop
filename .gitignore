@@ -1,0 +1,38 @@
+.env
+.env.*
+!.env.example
+
+# Personal context, not architecture. Excluded so the repo can go public
+# without advertising that it doubles as interview prep. Delete this line to
+# track it; see the README's "Going public" section.
+.cursor/rules/interview-prep.mdc
+
+# Go
+ingest-service/bin/
+*.exe
+*.test
+*.out
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+
+# Playwright
+playwright-report/
+test-results/
+.playwright/
+
+# Local data
+*.log
+dumps/
