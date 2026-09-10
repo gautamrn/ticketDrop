@@ -1,8 +1,8 @@
 # TicketDrop
 
 Low-latency detection of unannounced house-music ticket drops across Resident
-Advisor, EDMTrain, and DICE, with vector-based hype scoring and a bounded,
-self-healing browser execution stage.
+Advisor and EDMTrain, with vector-based hype scoring and a bounded,
+self-healing browser assist stage.
 
 Design decisions, the state machine, the latency budget, and the failure-mode
 analysis all live in **[`ARCHITECTURE.md`](./ARCHITECTURE.md)**. Read that first.
@@ -19,11 +19,11 @@ and neither replaces the other.
 .cursor/rules/          architectural boundaries + Socratic interview mode
 ARCHITECTURE.md         system design contract
 db/init/                Postgres + pgvector schema (runs on first boot)
-deploy/observability/   OTel Collector and Prometheus config
+deploy/observability/   Prometheus config for the Go service
 docker-compose.yml      Redis Streams + pgvector, observability behind a profile
-ingest-service/         Go poller            (phase 2)
-agent-harness/          Python LangGraph FSM (phase 3)
-admin-panel/            Next.js live panel   (phase 5)
+ingest-service/         Go discovery and availability pollers
+agent-harness/          Python LangGraph FSM and browser assist
+admin-panel/            Next.js live operations panel
 ```
 
 ## Quickstart
@@ -34,7 +34,7 @@ docker compose up -d
 docker compose ps
 ```
 
-With telemetry (Prometheus on http://localhost:9090):
+With Go service metrics (Prometheus on http://localhost:9090):
 
 ```powershell
 docker compose --profile observability up -d
@@ -62,16 +62,76 @@ After editing it during development, reset with:
 docker compose down -v; docker compose up -d
 ```
 
-## Phases
+Install application dependencies once:
 
-| Phase | Deliverable | Status |
-| --- | --- | --- |
-| 1 | Rules, architecture, compose stack, pgvector schema | done |
-| 2a | Go ingest: EDMTrain discovery adapter + Redis `XADD` | done |
-| 2b | Go ingest: RA availability adapter, diff engine, watchlist scheduler | next |
-| 3 | Python harness: LangGraph FSM, hype scoring, Playwright | |
-| 4 | Self-healing DOM repair loop | |
-| 5 | Next.js admin panel over the results stream | |
+```powershell
+cd agent-harness
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+cd ..\admin-panel
+npm ci
+cd ..
+```
+
+## Running the full pipeline locally
+
+Five processes, no API keys. The mock sources serve the same contracts as the
+real ones, so this exercises every stage end to end.
+
+```powershell
+# 1-2. Mock sources
+cd ingest-service
+go run ./cmd/mock-edmtrain -addr :8099
+go run ./cmd/mock-ra       -addr :8098
+
+# 3. Ingest, pointed at the mocks. RA_DEV_SEED_WATCHLIST gives the
+#    availability loop something to poll before the harness promotes anything.
+$env:EDMTRAIN_API_KEY="mock-key"; $env:EDMTRAIN_BASE_URL="http://localhost:8099/api"
+$env:EDMTRAIN_LOCATION_IDS="1"; $env:EDMTRAIN_POLL_INTERVAL_MS="10000"
+$env:RA_GRAPHQL_URL="http://localhost:8098/graphql"; $env:RA_AREAS="19"
+$env:RA_ENUMERATE_INTERVAL_MS="20000"; $env:RESOLVE_INTERVAL_MS="20000"
+$env:RA_DEV_SEED_WATCHLIST="3"
+go run ./cmd/ingest
+
+# 4. Harness. Seed preferences first or every drop scores zero.
+cd ../agent-harness
+.\.venv\Scripts\python.exe -m harness prefs add --kind artist --label "Prospa"
+.\.venv\Scripts\python.exe -m harness run
+
+# 5. Panel
+cd ../admin-panel; npm install; npm run dev   # http://localhost:3000
+```
+
+Nothing happens until a source *changes* — the first sighting of an event
+records a baseline rather than emitting a drop, which is what stops the poll
+loop from reporting every watched event as a fresh drop on startup. Provoke one:
+
+```powershell
+curl.exe -X POST "http://localhost:8098/admin/presale?id=90001"   # presale opens
+curl.exe -X POST "http://localhost:8098/admin/ticketed?id=90002"  # tickets appear
+curl.exe -X POST "http://localhost:8099/admin/add"                # new announcement
+```
+
+## Going live (personal)
+
+Copy `.env.example` to `.env` at the repo root. All three services read that file.
+
+| Variable | Required? | Where to get it | What happens if empty |
+| --- | --- | --- | --- |
+| `EDMTRAIN_API_KEY` | **Yes** for discovery | Apply at [edmtrain.com/developer-api](https://edmtrain.com/developer-api) while signed in | Discovery tier disables; you only see RA events you seed or already watch |
+| `EDMTRAIN_LOCATION_IDS` | **Yes** with the key | `GET https://edmtrain.com/api/locations?state=Michigan&city=Detroit&client=<key>` | The API returns every upcoming event, which is slow and wasteful |
+| `RA_AREAS` | **Yes** for availability | City code in `ra.co/events/...` URLs (Detroit `19`, London `13`, Berlin `34`, NYC `8`) | Availability tier disables. No key needed |
+| `VOYAGE_API_KEY` | Recommended | [voyageai.com](https://www.voyageai.com/) | Exact artist-name matches still score 1.0; similar names score noise |
+| `ANTHROPIC_API_KEY` | No (`alert` mode) | [console.anthropic.com](https://console.anthropic.com/) | Self-heal uses canned selectors. Irrelevant unless you switch to `assist` |
+
+Then seed the artists you actually care about — an empty preference table scores every drop at zero:
+
+```powershell
+cd agent-harness
+.\.venv\Scripts\python.exe -m harness prefs add --kind artist --label "Prospa"
+```
+
+Keep http://localhost:3000 open. There is no push notification; the panel is the alert.
 
 Running the discovery tier against the live API needs an EDMTrain client key,
 which you apply for while signed in at
@@ -88,7 +148,7 @@ things to know before flipping that switch, because both are hard to undo:
 made, not just the current tree. A secret committed once and deleted later is
 still in the history and still readable. `.env` is gitignored from the first
 commit for that reason — keep it that way, and never commit a real EDMTrain key,
-Anthropic key, or DICE token even temporarily.
+Voyage key, or Anthropic key even temporarily.
 
 **What is deliberately excluded.** `.cursor/rules/interview-prep.mdc` is
 gitignored: it is personal context rather than architecture. `system-arch.mdc`

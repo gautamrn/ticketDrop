@@ -24,7 +24,6 @@ const (
 // Platform values match the source_platform enum in the database.
 const (
 	PlatformRA       = "ra"
-	PlatformDICE     = "dice"
 	PlatformEDMTrain = "edmtrain"
 )
 
@@ -81,4 +80,40 @@ type DiscoveryAdapter interface {
 	Name() string
 	Tier() Tier
 	Discover(ctx context.Context, since time.Time) ([]Event, error)
+}
+
+// Snapshot is everything we can observe about one event's sale state at one
+// instant.
+//
+// The field set is deliberately narrow: it is exactly what RA returns to an
+// unauthenticated client. Per-tier data (name, price, sold-out state) is not
+// here because RA's Event.tickets returns an empty array without a promoter
+// session — verified against the live schema, see ARCHITECTURE.md §1.2. Adding
+// a field here that we cannot actually read would produce a fingerprint that
+// never changes and a detector that never fires.
+type Snapshot struct {
+	SourceEventID string
+
+	IsTicketed    bool
+	Cost          string
+	PresaleStatus string
+	ResaleActive  bool
+	QueueIt       bool
+	EventStatus   string
+
+	DateUpdated     *time.Time
+	Attending       *int
+	InterestedCount *int
+
+	ObservedAt time.Time
+	Raw        json.RawMessage
+}
+
+// AvailabilityAdapter reports the current sale state of a single known event.
+// One call per event per poll, which is why the caller runs it behind a bounded
+// worker pool rather than a goroutine per event.
+type AvailabilityAdapter interface {
+	Name() string
+	Tier() Tier
+	Snapshot(ctx context.Context, sourceEventID string) (Snapshot, error)
 }

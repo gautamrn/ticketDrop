@@ -6,7 +6,7 @@
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE TYPE source_platform AS ENUM ('ra', 'dice', 'edmtrain');
+CREATE TYPE source_platform AS ENUM ('ra', 'edmtrain');
 
 CREATE TYPE drop_state AS ENUM (
     'INGESTED',
@@ -17,8 +17,6 @@ CREATE TYPE drop_state AS ENUM (
     'SKIPPED',
     'FAILED'
 );
-
-CREATE TYPE tier_state AS ENUM ('available', 'sold_out', 'off_sale', 'unknown');
 
 -- 'announced' comes from the discovery tier (EDMTrain createdDate) and means
 -- "this show now exists", not "tickets are buyable". The other three come from
@@ -185,23 +183,30 @@ CREATE TABLE watchlist (
 CREATE INDEX watchlist_due_idx ON watchlist (tier, last_polled_at NULLS FIRST)
     WHERE active;
 
--- Append-only observation log. Each poll that changes a tier writes a row;
--- the diff between consecutive rows is what defines a drop.
-CREATE TABLE ticket_tiers (
-    id           bigserial PRIMARY KEY,
-    event_id     uuid NOT NULL REFERENCES events (id) ON DELETE CASCADE,
-    name         text NOT NULL,
-    state        tier_state NOT NULL DEFAULT 'unknown',
-    price_minor  integer,
-    currency     char(3),
-    on_sale_at   timestamptz,
-    raw          jsonb,
-    observed_at  timestamptz NOT NULL DEFAULT now()
+-- Coarse per-event availability observations, written only when the
+-- fingerprint changes. This exists because RA returns Event.tickets as an empty
+-- array to unauthenticated clients (ARCHITECTURE.md §1.2), so for RA there are
+-- no tiers to record — only the event-level signals below. Writing a row per
+-- poll instead of per change would mean ~30 rows/minute/event of identical data.
+CREATE TABLE event_snapshots (
+    id               bigserial PRIMARY KEY,
+    event_id         uuid NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+    fingerprint      text    NOT NULL,
+    is_ticketed      boolean NOT NULL DEFAULT false,
+    cost             text,
+    presale_status   text,
+    resale_active    boolean NOT NULL DEFAULT false,
+    queue_it         boolean NOT NULL DEFAULT false,
+    event_status     text,
+    attending        integer,
+    interested_count integer,
+    date_updated     timestamptz,
+    raw              jsonb,
+    observed_at      timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX ticket_tiers_event_observed_idx
-    ON ticket_tiers (event_id, observed_at DESC);
-
+CREATE INDEX event_snapshots_event_observed_idx
+    ON event_snapshots (event_id, observed_at DESC);
 
 -- ---------------------------------------------------------------- FSM state
 
@@ -214,7 +219,6 @@ CREATE TABLE drops (
     hype_score       numeric(4, 3) CHECK (hype_score >= 0 AND hype_score <= 1),
     attempt_count    smallint    NOT NULL DEFAULT 0,
     reservation_url  text,
-    trace_id         text,
     error            text,
     detected_at      timestamptz NOT NULL,
     state_entered_at timestamptz NOT NULL DEFAULT now(),

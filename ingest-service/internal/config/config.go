@@ -20,10 +20,41 @@ type Config struct {
 	StreamMaxLen int64
 
 	EDMTrain EDMTrain
+	RA       RA
 
 	MetricsAddr string
 	LogLevel    slog.Level
 }
+
+type RA struct {
+	Endpoint  string
+	UserAgent string
+	AreaIDs   []string
+	Lookahead time.Duration
+
+	// Availability tier: fast loop over watchlisted events only.
+	PollInterval   time.Duration
+	RequestTimeout time.Duration
+	BatchSize      int
+	Workers        int
+	QueueSize      int
+
+	// Enumerate loop: slow, exists only to learn RA event ids.
+	EnumerateInterval time.Duration
+	EnumeratePageSize int
+
+	// Cross-source linking. Slow and off the hot path: a missed link costs one
+	// unwatched show, so there is nothing to gain from running it often.
+	ResolveInterval  time.Duration
+	ResolveBatchSize int
+
+	// Development helper, not a production path.
+	SeedWatchlist int
+}
+
+// Enabled reports whether the availability tier has anything to poll. RA needs
+// no credential, so the gate is configuration rather than auth.
+func (r RA) Enabled() bool { return len(r.AreaIDs) > 0 }
 
 type EDMTrain struct {
 	APIKey             string
@@ -40,9 +71,8 @@ type EDMTrain struct {
 	Lookback time.Duration
 }
 
-// Enabled reports whether the discovery tier can run. Mirrors how DICE is
-// treated: a missing credential disables an adapter, it does not crash the
-// service.
+// Enabled reports whether the discovery tier can run. A missing credential
+// disables discovery without taking down availability polling.
 func (e EDMTrain) Enabled() bool { return e.APIKey != "" }
 
 func Load() (Config, error) {
@@ -64,6 +94,29 @@ func Load() (Config, error) {
 			IncludeLivestreams: envBool("EDMTRAIN_INCLUDE_LIVESTREAMS", false),
 			Lookback:           envMillis("EDMTRAIN_LOOKBACK_MS", 48*time.Hour),
 		},
+		RA: RA{
+			Endpoint:  env("RA_GRAPHQL_URL", "https://ra.co/graphql"),
+			UserAgent: env("RA_USER_AGENT", defaultUserAgent),
+			AreaIDs:   splitCSV(env("RA_AREAS", "")),
+			Lookahead: time.Duration(envInt("RA_LOOKAHEAD_DAYS", 60)) * 24 * time.Hour,
+
+			PollInterval:   envMillis("POLL_INTERVAL_MS", 2*time.Second),
+			RequestTimeout: envMillis("POLL_TIMEOUT_MS", 4*time.Second),
+			BatchSize:      envInt("RA_BATCH_SIZE", 200),
+			// Little's Law: workers ≈ throughput × latency. 200 events per 2 s
+			// is 100/sec, and RA responds in roughly 200 ms, so ~20 workers
+			// saturates the target rate without piling on upstream concurrency.
+			Workers:   envInt("RA_WORKERS", 20),
+			QueueSize: envInt("RA_QUEUE_SIZE", 400),
+
+			EnumerateInterval: envMillis("RA_ENUMERATE_INTERVAL_MS", 15*time.Minute),
+			EnumeratePageSize: envInt("RA_ENUMERATE_PAGE_SIZE", 100),
+
+			ResolveInterval:  envMillis("RESOLVE_INTERVAL_MS", 5*time.Minute),
+			ResolveBatchSize: envInt("RESOLVE_BATCH_SIZE", 100),
+
+			SeedWatchlist: envInt("RA_DEV_SEED_WATCHLIST", 0),
+		},
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -74,8 +127,20 @@ func Load() (Config, error) {
 		// discretion. A floor in code is cheaper than an apology email.
 		return Config{}, fmt.Errorf("EDMTRAIN_POLL_INTERVAL_MS must be >= 10000, got %s", cfg.EDMTrain.PollInterval)
 	}
+	if cfg.RA.PollInterval < 500*time.Millisecond {
+		// RA publishes no limits, which is a reason for more restraint rather
+		// than less: an undocumented limit is enforced by an IP block.
+		return Config{}, fmt.Errorf("POLL_INTERVAL_MS must be >= 500, got %s", cfg.RA.PollInterval)
+	}
+	if cfg.RA.UserAgent == "" {
+		// The endpoint rejects requests without a browser User-Agent.
+		return Config{}, errors.New("RA_USER_AGENT must not be empty")
+	}
 	return cfg, nil
 }
+
+const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+	"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 // loadDotEnv walks up from the working directory so the service can be run
 // from either the repo root or ingest-service/.

@@ -10,17 +10,37 @@ Read `ARCHITECTURE.md` before proposing cross-service changes.
 
 ## Service ownership
 
-- `ingest-service/` — **Go 1.25**, Fiber. Owns all outbound polling of ticketing
+- `ingest-service/` — **Go 1.25**, `net/http`. Owns all outbound polling of ticketing
   sources and all writes to the Redis Stream. Never imports Python, never drives
   a browser, never calls an LLM.
 - `agent-harness/` — **Python 3.12+**, LangGraph, async Playwright. Owns the
   finite state machine, hype evaluation, and browser execution. Only reads from
   the Redis Stream via a consumer group; never polls a ticketing source directly.
-- `admin-panel/` — **Next.js (App Router)**, Tailwind, WebSockets. Read-only over
-  the pipeline plus manual overrides. Contains no business logic that the harness
-  needs to make a decision.
+- `admin-panel/` — **Next.js (App Router)**, Tailwind, **SSE** (not WebSockets:
+ the feed is server-to-client only and overrides are POSTs, so a bidirectional
+ transport would cost a custom server to buy a channel nothing sends on). Read
+ model over the pipeline plus a narrow set of operator overrides. Contains no
+ business logic that the harness needs to make a decision — in particular, it
+ does not embed text, so adding a preference is a harness CLI operation rather
+ than a panel form.
 - `db/` — schema is the contract between services. Any column added for one
   service must be documented in `ARCHITECTURE.md`.
+
+### Table ownership, and its one exception
+
+The Go service owns the catalogue (`events`, `venues`, `artists`,
+`event_artists`, `event_links`, `event_snapshots`, `ingest_watermarks`). The
+harness owns the FSM record (`drops`, `drop_transitions`, `selector_overrides`)
+and `watchlist`.
+
+The harness may insert a **stub `events` row** when a stream message names an
+event the catalogue does not have. This is a deliberate exception, not drift:
+`drops.event_id` is `NOT NULL`, so without a row there is nowhere to record that
+the drop happened, and discarding the message to protect a boundary loses the
+audit trail the boundary exists to keep. The insert must be `ON CONFLICT DO
+UPDATE`, must log a warning, and must mark the row as stubbed in the transition
+detail so it is distinguishable from catalogue data. The ingester's next upsert
+corrects it.
 
 ## Hard boundaries
 
@@ -36,15 +56,15 @@ Read `ARCHITECTURE.md` before proposing cross-service changes.
 
 - Ingestion poll → stream append: **p99 < 50 ms** (excluding network RTT to the
   source).
-- Every stage records a span and writes a row to `drop_transitions` with its
-  measured `latency_ms`. A stage that cannot be measured cannot be optimized.
+- Every harness stage writes a row to `drop_transitions` with its measured
+  `latency_ms`. A stage that cannot be measured cannot be optimized.
 - Any blocking call inside a Goroutine or coroutine needs an explicit timeout.
   Unbounded `await` / channel receive is a review failure.
 
 ## Testing
 
 - Go: **table-driven tests** (`tests := []struct{name string; ...}`) with
-  `t.Run(tt.name, ...)`. Use `miniredis` for stream assertions, not a live Redis.
+  `t.Run(tt.name, ...)`. Stream assertions use an in-memory double, never live Redis.
 - Python: **pytest** specs, `pytest-asyncio` for coroutines. Every FSM node gets
   a test that asserts its output state and that it terminates.
 - Anything touching the network in a test must be faked or recorded.

@@ -52,4 +52,42 @@ var (
 		Name: "ingest_watermark_age_seconds",
 		Help: "Age of the stored ingest cursor. Growing without bound means the poller is stalled.",
 	}, []string{"source"})
+
+	// Queue depth is the whole reason the availability tier uses a bounded pool
+	// rather than a goroutine per event: an unbounded design has no number to
+	// put here, so saturation is invisible until memory runs out.
+	PoolQueueDepth = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ingest_pool_queue_depth",
+		Help: "Jobs waiting in the availability worker pool.",
+	}, []string{"source"})
+
+	PollDropped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ingest_poll_dropped_total",
+		Help: "Poll jobs shed because the worker queue was full. Non-zero means undersized workers or a slow upstream.",
+	}, []string{"source"})
+
+	WatchlistDue = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ingest_watchlist_due",
+		Help: "Events returned by the most recent watchlist scheduling query.",
+	}, []string{"source"})
+
+	// A high unclassified rate means the fingerprint includes a field that
+	// changes for reasons Classify does not model, and is burning polls.
+	UnclassifiedChange = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ingest_unclassified_change_total",
+		Help: "Fingerprint changed but no rule explained it, so no drop was emitted.",
+	}, []string{"source"})
+
+	LinksCreated = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ingest_cross_source_links_total",
+		Help: "Events successfully linked across sources.",
+	}, []string{"from", "to"})
+
+	// Rejections are expected and healthy. A ratio approaching 100% over time
+	// means the matcher's thresholds are too strict, or enumerate is not
+	// covering the areas discovery is finding shows in.
+	LinksRejected = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ingest_cross_source_link_rejected_total",
+		Help: "Candidate sets that produced no confident match.",
+	}, []string{"from", "to"})
 )

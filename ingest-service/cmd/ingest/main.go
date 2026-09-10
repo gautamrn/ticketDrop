@@ -1,7 +1,7 @@
 // Command ingest runs the TicketDrop ingestion service.
 //
-// Phase 2a: the EDMTrain discovery tier only. The RA availability tier and its
-// bounded worker pool land in 2b.
+// EDMTrain discovery, RA enumeration and availability polling, and cross-source
+// resolution run as independently supervised loops.
 package main
 
 import (
@@ -15,10 +15,15 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/sync/errgroup"
 
+	"ticketdrop/ingest/internal/cache"
 	"ticketdrop/ingest/internal/config"
 	"ticketdrop/ingest/internal/pipeline"
+	"ticketdrop/ingest/internal/pool"
+	"ticketdrop/ingest/internal/source"
 	"ticketdrop/ingest/internal/source/edmtrain"
+	"ticketdrop/ingest/internal/source/ra"
 	"ticketdrop/ingest/internal/store"
 	"ticketdrop/ingest/internal/stream"
 )
@@ -59,30 +64,95 @@ func run() error {
 
 	log.Info("connected", "stream", cfg.RedisStream)
 
+	snapshots, err := cache.New(cfg.RedisURL)
+	if err != nil {
+		return err
+	}
+	defer snapshots.Close()
+
 	srv := startAdminServer(cfg.MetricsAddr, log)
 	defer shutdown(srv, log)
 
-	if !cfg.EDMTrain.Enabled() {
-		// Matches how DICE is treated: a missing credential disables an
-		// adapter rather than crashing the service.
-		log.Warn("EDMTRAIN_API_KEY not set, discovery tier disabled; nothing to do")
+	// Each loop runs independently. One tier being disabled or failing must not
+	// take the other down: discovery and availability answer different
+	// questions and have no runtime dependency on each other.
+	group, gctx := errgroup.WithContext(ctx)
+	var started int
+
+	if cfg.EDMTrain.Enabled() {
+		if len(cfg.EDMTrain.LocationIDs) == 0 {
+			log.Warn("EDMTRAIN_LOCATION_IDS is empty; the API will return every upcoming event, " +
+				"which is slow and wasteful. Look up ids via the Locations API.")
+		}
+		client := edmtrain.NewClient(cfg.EDMTrain.BaseURL, cfg.EDMTrain.APIKey, cfg.EDMTrain.RequestTimeout)
+		adapter := edmtrain.NewAdapter(client, cfg.EDMTrain.LocationIDs, cfg.EDMTrain.IncludeLivestreams)
+		discovery := pipeline.NewDiscovery(adapter, st, pub, log,
+			cfg.EDMTrain.PollInterval, cfg.EDMTrain.Lookback)
+
+		group.Go(func() error { return discovery.Run(gctx) })
+		started++
+	} else {
+		// A missing credential disables discovery rather than preventing the RA
+		// availability tier from running.
+		log.Warn("EDMTRAIN_API_KEY not set, discovery tier disabled")
+	}
+
+	if cfg.RA.Enabled() {
+		raClient := ra.NewClient(cfg.RA.Endpoint, cfg.RA.UserAgent, cfg.RA.RequestTimeout)
+		raAdapter := ra.NewAdapter(raClient, ra.ParseAreaIDs(cfg.RA.AreaIDs), cfg.RA.Lookahead)
+
+		enumerator := pipeline.NewEnumerator(raAdapter, st, log,
+			cfg.RA.EnumerateInterval, cfg.RA.EnumeratePageSize)
+		group.Go(func() error { return enumerator.Run(gctx) })
+
+		if cfg.RA.SeedWatchlist > 0 {
+			group.Go(func() error {
+				return seedWatchlist(gctx, st, log, cfg.RA.SeedWatchlist)
+			})
+		}
+
+		workers := pool.New(cfg.RA.Workers, cfg.RA.QueueSize)
+		availability := pipeline.NewAvailability(raAdapter, st, snapshots, pub, workers, log,
+			cfg.RA.PollInterval, cfg.RA.BatchSize)
+		group.Go(func() error { return availability.Run(gctx) })
+		started += 2
+	} else {
+		log.Warn("RA_AREAS not set, availability tier disabled")
+	}
+
+	// Linking only means something when both catalogues are being filled.
+	if cfg.EDMTrain.Enabled() && cfg.RA.Enabled() {
+		resolver := pipeline.NewResolver(st, log,
+			source.PlatformEDMTrain, source.PlatformRA,
+			cfg.RA.ResolveInterval, cfg.RA.ResolveBatchSize)
+		group.Go(func() error { return resolver.Run(gctx) })
+	}
+
+	if started == 0 {
+		log.Error("no ingestion tier is configured; set EDMTRAIN_API_KEY or RA_AREAS")
 		<-ctx.Done()
 		return nil
 	}
+	return group.Wait()
+}
 
-	client := edmtrain.NewClient(cfg.EDMTrain.BaseURL, cfg.EDMTrain.APIKey, cfg.EDMTrain.RequestTimeout)
-	adapter := edmtrain.NewAdapter(client, cfg.EDMTrain.LocationIDs, cfg.EDMTrain.IncludeLivestreams)
-
-	if len(cfg.EDMTrain.LocationIDs) == 0 {
-		log.Warn("EDMTRAIN_LOCATION_IDS is empty; the API will return every upcoming event, " +
-			"which is slow and wasteful. Look up ids via the Locations API.")
+// seedWatchlist is a development convenience so the availability loop has work
+// before the harness exists to promote events by hype score. It waits for the
+// first enumerate pass to land rather than racing an empty table.
+func seedWatchlist(ctx context.Context, st *store.Store, log *slog.Logger, limit int) error {
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-time.After(5 * time.Second):
 	}
-
-	discovery := pipeline.NewDiscovery(
-		adapter, st, pub, log,
-		cfg.EDMTrain.PollInterval, cfg.EDMTrain.Lookback,
-	)
-	return discovery.Run(ctx)
+	n, err := st.SeedWatchlist(ctx, source.PlatformRA, limit)
+	if err != nil {
+		log.Warn("dev watchlist seed failed", "err", err)
+		return nil
+	}
+	log.Warn("dev watchlist seed applied; production promotion is the harness's job",
+		"events_added", n)
+	return nil
 }
 
 // startAdminServer exposes /metrics and /healthz on net/http rather than

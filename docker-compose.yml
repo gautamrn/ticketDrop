@@ -46,19 +46,6 @@ services:
       retries: 10
       start_period: 10s
 
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.115.1
-    container_name: ticketdrop-otel
-    restart: unless-stopped
-    profiles: ["observability"]
-    command: ["--config=/etc/otel/config.yaml"]
-    volumes:
-      - ./deploy/observability/otel-collector.yaml:/etc/otel/config.yaml:ro
-    ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "8889:8889"   # Prometheus scrape target
-
   prometheus:
     image: prom/prometheus:v3.1.0
     container_name: ticketdrop-prometheus
@@ -72,9 +59,6 @@ services:
       - prometheus-data:/prometheus
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
-    depends_on:
-      - otel-collector
-
 volumes:
   redis-data:
   postgres-data:

@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink-950: #08090c;
+  --color-ink-900: #0d0f14;
+  --color-ink-850: #12151c;
+  --color-ink-800: #171b24;
+  --color-ink-700: #232936;
+  --color-ink-600: #333b4d;
+  --color-ink-400: #6b7689;
+  --color-ink-300: #97a1b3;
+  --color-ink-100: #e4e8f0;
+
+  --color-signal: #4ade80;
+  --color-warn: #fbbf24;
+  --color-danger: #f87171;
+  --color-accent: #818cf8;
+}
+
+html,
+body {
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-feature-settings: "tnum" 1, "cv02" 1;
+}
+
+/* Feed rows arrive one at a time; without a cue the eye misses an insert at the
+   top of a list it is already reading. */
+@keyframes flash-in {
+  from {
+    background-color: color-mix(in oklab, var(--color-accent) 22%, transparent);
+    transform: translateY(-2px);
+  }
+  to {
+    background-color: transparent;
+    transform: translateY(0);
+  }
+}
+
+.flash-in {
+  animation: flash-in 900ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-in {
+    animation: none;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-ink-900);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-ink-700);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-600);
+}

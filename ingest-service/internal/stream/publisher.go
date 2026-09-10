@@ -43,11 +43,9 @@ func (p *Publisher) Close() error                   { return p.rdb.Close() }
 
 type Drop struct {
 	Change      string
-	EventID     string
 	Event       source.Event
 	Fingerprint string
 	DetectedAt  time.Time
-	TraceID     string
 }
 
 // Publish appends one drop and returns the generated drop_id, which is the
@@ -78,7 +76,6 @@ func (p *Publisher) Publish(ctx context.Context, d Drop) (string, error) {
 		"change":      d.Change,
 		"fingerprint": d.Fingerprint,
 		"detected_at": d.DetectedAt.UTC().Format(time.RFC3339Nano),
-		"trace_id":    d.TraceID,
 		"raw":         string(ev.Raw),
 	}
 

@@ -1,11 +1,14 @@
 .env
 .env.*
-.env.example
+# The template carries no secrets and is the only documentation of which
+# variables exist, so it must survive the .env.* rule above.
+!.env.example
 
 # Personal context, not architecture. Excluded so the repo can go public
 # without advertising that it doubles as interview prep. Delete this line to
 # track it; see the README's "Going public" section.
 .cursor/rules/interview-prep.mdc
+RESUME_BRIEF.md
 
 # Go
 ingest-service/bin/
@@ -27,6 +30,8 @@ node_modules/
 .next/
 out/
 .turbo/
+next-env.d.ts
+*.tsbuildinfo
 
 # Playwright
 playwright-report/

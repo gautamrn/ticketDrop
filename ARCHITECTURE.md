@@ -1,8 +1,8 @@
 # TicketDrop — Architecture
 
-Autonomous, low-latency detection of unannounced house-music ticket drops
-across Resident Advisor, EDMTrain, and DICE, with vector-based hype scoring and
-a bounded, self-healing browser execution stage.
+Low-latency detection of unannounced house-music ticket drops across Resident
+Advisor and EDMTrain, with vector-based hype scoring and a bounded,
+self-healing browser assist stage.
 
 ---
 
@@ -13,15 +13,11 @@ This is the single most important constraint on the ingestion design.
 
 | Source | Endpoint | Auth | What you actually get |
 | --- | --- | --- | --- |
-| **Resident Advisor** | `POST https://ra.co/graphql` | None | The site's own public GraphQL API. `eventListings(filters, pageSize, page, sort)` filtered by `areas.eq` (numeric city code) and `listingDate.gte/lte`. Introspection is enabled. Requires a normal browser `User-Agent`. |
+| **Resident Advisor** | `POST https://ra.co/graphql` | None | The site's own public GraphQL API. `eventListings(filters, pageSize, page, sort)` filtered by `areas.eq` (numeric city code) and `listingDate.gte/lte`. Introspection is enabled. Requires a normal browser `User-Agent` and `Referer`. **`Event.tickets` returns `[]` unauthenticated** — see §1.2. Useful area codes: Detroit 19, London 13, Berlin 34. |
 | **EDMTrain** | `GET https://edmtrain.com/api/events` | `client=<API key>` query param, free, applied for with an account | Sanctioned listings API for US/Canada. Filter by `locationIds`, `artistIds`, `venueIds`, `startDate`, and critically **`createdStartDate`**. Returns `ticketLink`, lineup with `b2bInd`, venue with coordinates. No images, **no ticket availability**. |
-| **DICE** | `POST https://partners-endpoint.dice.fm/graphql` | Bearer token issued in MIO | The **Ticket Holders** partner API. Cursor-paginated `viewer.events`. It returns *the events belonging to your own partner account*, not a global catalogue. |
 
 Consequences:
 
-- **DICE cannot be used for global discovery.** Without a partner token there is
-  no legitimate DICE feed. The adapter is therefore built but disabled unless
-  `DICE_PARTNER_TOKEN` is set, and even then it only covers your own events.
 - Treat RA's field names as *modeled, not contracted* — it is the site's own
   internal API with no stability guarantee and no agreement behind it. EDMTrain
   is the only source with a real API key and written terms. Schema drift is a
@@ -35,7 +31,7 @@ separate cadences rather than as interchangeable adapters.
 
 | | Discovery tier | Availability tier |
 | --- | --- | --- |
-| Source | EDMTrain | RA (DICE if tokened) |
+| Source | EDMTrain | RA |
 | Question | "What shows exist?" | "Did the sale state change?" |
 | Mechanism | `createdStartDate` = last poll | Fingerprint diff (§1.2) |
 | Cadence | ~60 s | ~2 s, watchlisted events only |
@@ -61,22 +57,108 @@ remains RA's job.
 ### 1.2 What "a drop" actually is
 
 There is no drop webhook. An unannounced drop is a **diff between two polls**, so
-the ingest service is a change-detector, not a listener. For each tracked event
-we compute an availability fingerprint:
+the ingest service is a change-detector, not a listener.
+
+**Verified against the live RA schema, 2026-08-09.** The original design
+fingerprinted per-tier state (`tier_name:tier_state:price`). That is not
+possible. `Event.tickets` exists, is queryable without auth, and returns a
+`Ticket` type carrying exactly the right fields — `validType`, `priceRetail`,
+`onSaleFrom`, `isStoppedSales` — but it **returns an empty array for every
+unauthenticated request**. Twelve events sampled across Detroit, London, and
+Berlin: no GraphQL errors, twelve empty arrays. The field is filtered, not
+forbidden, which is worse because it fails silently rather than loudly.
+
+Every sampled event also reported `ticketingSystem: LEGACY`, meaning RA is not
+the seller and links out to a vendor. For those events per-tier data does not
+exist on RA at any privilege level.
+
+What an unauthenticated client *can* observe per event:
+
+| Field | Type | Signal |
+| --- | --- | --- |
+| `isTicketed` | Boolean | tickets exist at all |
+| `cost` | StrippedHtml | free text, e.g. "£15 - £20"; a change implies a tier change |
+| `presaleStatus` | enum `ACTIVE`/`COMPLETED`/null | a presale opening — the highest-value transition we get |
+| `resaleActive` | Boolean | returns going back on sale |
+| `queueItEnabled` | Boolean | waiting room, forces alert-only |
+| `attending`, `interestedCount` | Int | demand velocity |
+| `dateUpdated` | DateTime | *something* changed; useful as a cheap trigger |
+| `status` | enum `PENDING`/`LIVE` | listing went live |
+
+So the fingerprint is coarser than planned but still meaningful:
 
 ```
-fingerprint = sha256(event_id ‖ sorted(tier_name:tier_state:price)... ‖ is_ticketed)
+fingerprint = sha256(is_ticketed ‖ cost ‖ presale_status ‖ resale_active
+                     ‖ queue_it ‖ event_status ‖ date_updated)
 ```
 
-A drop is emitted when the fingerprint transitions in a meaningful direction:
+Detectable transitions, in descending order of value:
 
-- an event appears in a watched area for the first time and is already ticketed;
-- `isTicketed` flips `false → true`;
-- a ticket tier appears, or moves `sold_out → available` (a release or a return).
+- `presaleStatus` null → `ACTIVE` — a presale just opened. Emitted as
+  `tier_available`, the closest existing change kind.
+- `isTicketed` false → true — tickets now exist (`new_ticketed`).
+- `resaleActive` false → true — returns released (`returned_to_sale`).
+- `cost` text changes while ticketed — a tier was added or repriced
+  (`tier_available`).
+- `status` `PENDING` → `LIVE` — the listing itself went public.
 
-The previous fingerprint lives in Redis (`fp:<source>:<event_id>`, TTL 30 days).
-Postgres holds the durable history. Fingerprint equality is the dedupe primitive
-that stops a 2-second poll loop from emitting the same drop 30 times a minute.
+`dateUpdated` alone is deliberately **not** a drop. It moves for typo fixes and
+flyer swaps, so it participates in the fingerprint but never classifies a change
+on its own; a fingerprint delta with no classifying field is recorded and
+dropped.
+
+**Consequence for later phases.** True inventory state for a `LEGACY` event
+lives on the vendor's page, not on RA. That is not a gap in ingestion, it is the
+reason the Playwright stage exists: ingestion detects that *something changed*
+cheaply, and the browser stage resolves *what is actually buyable* only for
+events that clear the hype threshold. Ingestion is the trigger, not the oracle.
+
+The previous state lives in Redis (`snap:<source>:<event_id>`, TTL 30 days) as the
+**whole snapshot**, not just its hash. A hash answers "did something change" but
+not "what changed", and classification needs the previous field values to tell a
+presale opening from a flyer swap. A snapshot is a few hundred bytes, so the extra
+memory buys the only information that makes the delta actionable. Postgres holds
+the durable history in `event_snapshots`, written only when the fingerprint moves.
+
+Fingerprint equality is the dedupe primitive that stops a 2-second poll loop from
+emitting the same drop 30 times a minute. Two rules matter as much as the hash:
+
+- **The first sighting of an event emits nothing.** It records a baseline. Without
+  that, every watchlisted event looks like a fresh drop on startup — the cold-start
+  stampede in §9.
+- **`attending` and `interestedCount` are excluded from the hash.** They tick
+  constantly as people save an event, so including them would change the
+  fingerprint on nearly every poll and destroy its value as a cheap "nothing
+  happened" filter. They are demand signals for hype scoring, not sale state.
+
+### 1.3 Linking the two tiers
+
+The tiers do not share an id space, so an EDMTrain discovery cannot be polled on
+RA without first deciding which RA event is the same night. That match scores
+venue similarity (0.45), lineup overlap (0.40), and title similarity (0.15), with
+the date as a hard filter rather than a weighted term — two different shows at one
+venue with overlapping lineups are common, but the same show on another night is
+not the same show.
+
+Candidates are read from our own tables rather than fetched: the RA enumerate loop
+has already stored every event in the configured areas, so linking costs one local
+query instead of an API call per unresolved event.
+
+The governing bias is that **a false link is worse than no link**. A wrong match
+means polling some other event and alerting on a drop the user cannot buy, which
+is indistinguishable from a bug and discredits every other alert. A link therefore
+requires an absolute score of 0.60 *and* a 0.10 margin over the runner-up;
+residencies produce near-identical candidates on the same night at the same venue,
+and guessing between them is precisely the error to avoid. Unmatched shows are
+reconsidered on the next pass, because a missing candidate now is not evidence
+that none exists.
+
+Date tolerance is ±48 h, which is wider than it appears necessary. A date-only
+source is stored at midnight UTC while a timed source is stored as a true instant,
+so a 22:00 show in Detroit — 02:00 UTC the following day — is already 26 h from its
+counterpart before the two sources disagree at all. Widening the window admits
+more candidates rather than more false links; the ambiguity margin is what rejects
+a wrong pick.
 
 ---
 
@@ -84,15 +166,19 @@ that stops a 2-second poll loop from emitting the same drop 30 times a minute.
 
 ```
    DISCOVERY TIER (~60 s)              AVAILABILITY TIER (~2 s)
-  [ EDMTrain REST + key ]        [ RA GraphQL ]   [ DICE partner GraphQL ]
-             │                          └────────────┬─────────┘
-             │ createdStartDate delta                │ fingerprint diff
-             ▼                                       ▼
-  ┌────────────────────────┐            ┌──────────────────────────┐
-  │  Discovery poller      │──promote──▶│   Availability poller    │
-  │  emits 'announced'     │  watchlist │   emits sale changes     │
-  └───────────┬────────────┘            └────────────┬─────────────┘
-              └──────────────┬───────────────────────┘
+  [ EDMTrain REST + key ]              [ RA GraphQL ]
+             │                     enumerate + fingerprint diff
+             │ createdStartDate              │
+             │ delta                         │
+             ▼                               ▼
+  ┌────────────────────────┐   ┌───────────┐  ┌──────────────────────────┐
+  │  Discovery poller      │   │ Resolver  │  │   Availability poller    │
+  │  emits 'announced'     │──▶│ event_    │─▶│   bounded worker pool    │
+  │  sequential, 1 key     │   │ links     │  │   emits sale changes     │
+  └───────────┬────────────┘   └───────────┘  └────────────┬─────────────┘
+              │                  venue+lineup+date          │
+              │                  local candidates only      │
+              └──────────────┬───────────────────────────────┘
                              ▼
                         ┌──────────────────────────┐
                         │     Go Ingest Proxy      │  p99 append < 50 ms
@@ -124,9 +210,17 @@ that stops a 2-second poll loop from emitting the same drop 30 times a minute.
                                          ▼
                         ┌──────────────────────────┐
                         │ Redis 'ticket:drops:     │
-                        │  results' → Next.js WS   │
+                        │  results' → Next.js SSE  │
                         └──────────────────────────┘
 ```
+
+That last edge was originally drawn as a WebSocket. It is Server-Sent Events,
+because the traffic is strictly server-to-client: every operator action is a
+mutation that wants a response, which is a POST. A bidirectional transport would
+buy a channel nothing sends on, and cost a custom server, since the App Router
+cannot upgrade a connection inside a route handler. The trade is that `XREAD
+BLOCK` holds one Redis connection per connected browser, so the panel scales
+with concurrent operators rather than with drop volume.
 
 ---
 
@@ -199,6 +293,15 @@ terminates in `SKIPPED`. It never enters `RESERVING`, because at announcement
 time there is nothing to reserve — EDMTrain does not know whether tickets are
 on sale. Reservation only ever fires from an availability-tier change.
 
+Promotion follows `event_links` onto the RA row when the link already exists.
+When it does not — the resolver runs on a ~5 min loop, off the hot path — the
+harness still writes the EDMTrain row so the decision survives, then a 30 s
+loop (`WATCHLIST_REPOINT_INTERVAL_MS`) rewrites it once the link appears.
+Ingest never updates `watchlist`; that table is harness-owned. A false
+"we're watching this" is worse than a 30 s delay after the link exists, and
+throwing the promotion away because the resolver had not run yet is how the
+drop is missed.
+
 Invariants enforced by the harness:
 
 1. `SELF_HEAL` is entered **at most once** per drop (`attempt_count <= 1`).
@@ -214,9 +317,9 @@ Invariants enforced by the harness:
 | Key | Type | Purpose |
 | --- | --- | --- |
 | `ticket:drops` | stream | Drop events. Written only by Go. `MAXLEN ~ 100000`. |
-| `ticket:drops:results` | stream | FSM outcomes, tailed by the Next.js gateway. |
+| `ticket:drops:results` | stream | FSM outcomes, tailed by the admin panel over SSE. `MAXLEN` capped, so it is the live feed and not the record; Postgres is the record. |
 | `tdrop-harness` | consumer group on `ticket:drops` | Competing consumers, one per harness worker. |
-| `fp:<source>:<event_id>` | string | Last availability fingerprint, TTL 30d. |
+| `snap:<source>:<event_id>` | string (JSON) | Last availability **snapshot**, TTL 30d. Stores the whole observation, not just its hash, because classification needs the previous field values — see §1.2. |
 | `selector_overrides:<domain>` | hash | `logical_name → css_selector`, healed by Claude. |
 
 Message fields on `ticket:drops` (flat, string-valued — Redis streams have no
@@ -224,7 +327,7 @@ nested types):
 
 ```
 drop_id        uuid v7, generated by Go, idempotency key for the whole pipeline
-source         "ra" | "edmtrain" | "dice"
+source         "ra" | "edmtrain"
 event_id       source-native event id
 event_url      canonical public URL (EDMTrain: its link, unmodified — ToS §10)
 ticket_link    outbound vendor sale URL, when the source provides one
@@ -237,7 +340,6 @@ queue_it       "true" | "false"
 change         "announced" | "new_ticketed" | "tier_available" | "returned_to_sale"
 fingerprint    sha256 hex of the new availability state (empty for "announced")
 detected_at    RFC3339 with nanoseconds
-trace_id       W3C traceparent, propagated into the Python span
 raw            JSON blob of the source payload
 ```
 
@@ -273,6 +375,30 @@ missing signal degrades the score instead of erroring the node:
 
 Threshold for `RESERVING` is `HYPE_THRESHOLD` (default `0.80`).
 
+**What "degrades" means, precisely.** It depends on *why* a signal is missing,
+and conflating the two cases is a live bug rather than a nuance.
+
+A signal that **failed** — an embedding timeout, an event whose artists we have
+never seen — contributes zero while keeping its weight in the denominator.
+Renormalizing there would let a drop with three dead signals and one strong
+artist match score 1.0 and reserve on a quarter of the evidence. Absence of
+evidence must not become evidence.
+
+A capability the deployment **cannot produce at all** is different. Nothing
+populates `artists.sound_signature`, so the 0.25 sound weight is unearnable by
+every event equally. Charging for it does not make scoring conservative; it caps
+every possible score at 0.75 and puts the 0.80 threshold permanently out of
+reach. This was measured, not predicted: a live drop with a perfect artist and
+venue match scored exactly 0.750 and routed to `SKIPPED`, meaning `RESERVING` was
+unreachable in any real deployment. A uniform penalty across all events is
+arithmetically identical to lowering the threshold, except that it is invisible
+and nobody chose it.
+
+So a globally-absent capability is excluded from the denominator at startup,
+detected from the data actually present rather than from a config flag, and
+logged when it happens. A signal that merely failed for one drop is not. The
+first is a statement about the deployment; the second is about the event.
+
 **Embedding model.** Anthropic does not expose an embeddings endpoint — Claude
 cannot produce these vectors. The schema is dimensioned for **Voyage AI
 `voyage-3` (1024-d)**, Anthropic's recommended embedding partner. Swapping to
@@ -300,11 +426,22 @@ selector problems and asking an LLM about them just burns the latency budget.
    control.
 2. The cleaned DOM plus the failing `logical_name` (e.g. `buy_button`) goes to
    Claude 3.5 Sonnet, which returns candidate CSS selectors as structured JSON.
-3. The top candidate is validated in-page (exactly one match, visible, enabled)
-   before use. An unvalidated selector is never executed.
+3. Candidates are validated in-page (exactly one match, visible, enabled) before
+   use, taking the first that passes, up to three. An unvalidated selector is
+   never executed. Ranking beyond the top guess costs only local DOM checks —
+   there is still exactly one model call — and a model that gets the right
+   answer second should not fail the drop.
 4. On validation success, write through to `selector_overrides:<domain>` in Redis
-   **and** the `selector_overrides` table, then resume `RESERVING` once.
+   **and** the `selector_overrides` table, then complete the reservation and
+   terminate in `NOTIFIED`.
 5. On failure, transition to `FAILED` and raise a manual alert. **One attempt.**
+
+`SELF_HEAL` terminates rather than re-entering `RESERVING`. An earlier draft of
+this document said "resume `RESERVING` once", which contradicted the state
+diagram in §4 and would have made the graph cyclic. The one-attempt cap is then
+only as reliable as a counter that every path remembers to increment. Keeping the
+graph acyclic makes the cap a property of the topology instead — there is no edge
+back, so there is no second attempt to guard against.
 
 The retry cap is the whole safety property. Each heal costs ~1 s and a Sonnet
 call; an uncapped loop against a site-wide redesign would occupy every worker
@@ -321,13 +458,13 @@ simultaneously and convert a cosmetic breakage into a total outage.
 | `venues`, `artists`, `events`, `event_artists` | Normalized catalogue from source adapters. `artists` and `events` carry embeddings. |
 | `event_links` | Cross-source entity resolution: duplicates of one show point at an elected canonical row. |
 | `watchlist` | Which events the fast availability loop polls, and at what cadence tier. |
-| `ticket_tiers` | Time-series of per-tier availability; the raw material for drop diffing. |
+| `event_snapshots` | Append-only event-level observations used to audit availability changes. |
 | `drops` | One row per detected drop = the FSM instance, including `state` and `hype_score`. |
 | `drop_transitions` | Append-only FSM audit log with per-stage `latency_ms`. |
 | `user_preferences` | The vectors hype scoring matches against. |
 | `selector_overrides` | Durable copy of healed selectors; Redis is the cache. |
 
-`events` and `ticket_tiers` keep a `raw jsonb` column. When an upstream schema
+`events` and `event_snapshots` keep a `raw jsonb` column. When an upstream schema
 changes, a reparse is a SQL migration rather than lost data.
 
 ---
@@ -353,7 +490,7 @@ restraint, not engineering.
 
 ---
 
-## 10. Operating posture (read before Phase 3)
+## 10. Operating posture
 
 Automated ticket *purchasing* sits in a regulated area: the US **BOTS Act**
 (2016) and the UK's **Breaching of Limits on Ticket Sales Regulations 2018**
@@ -366,8 +503,7 @@ The reservation stage is therefore governed by `RESERVATION_MODE`:
 | Mode | Behavior |
 | --- | --- |
 | `alert` *(default)* | No browser purchase path. Detect, score, notify with a deep link. Fastest to build, zero legal exposure. |
-| `assist` | Launch a **headed** browser, navigate to the event, pre-fill known fields, then hand the live session to the human for CAPTCHA, queue, and payment. The bot never completes a transaction. |
-| `auto` | Fully autonomous hold. **Requires** `queue_it == false` and a source whose ToS permits it. Off by default and not implemented in Phase 1. |
+| `assist` | Launch a **headed** browser, navigate to the event, locate the ticket CTA, then hand the live session to the human for CAPTCHA, queue, and payment. The bot never completes a transaction. |
 
 Events with `queue_it == true` are forced to `alert` regardless of mode. This is
 an architectural constraint, not a runtime preference.
@@ -395,13 +531,37 @@ we have explicit permission to use.
 
 ---
 
-## 11. Phase roadmap
+## 11. Implementation status
 
 | Phase | Deliverable | Status |
 | --- | --- | --- |
-| **1** | Rules, this document, `docker-compose`, pgvector schema, observability scaffolding | **done** |
+| **1** | Rules, this document, `docker-compose`, pgvector schema, Prometheus config | **done** |
 | **2a** | Go ingest: EDMTrain discovery adapter, `createdStartDate` cursor, `XADD`, Prometheus metrics | **done** — mock server included; live run needs `EDMTRAIN_API_KEY` |
-| 2b | Go ingest: RA availability adapter, fingerprint diff engine, watchlist scheduler, bounded worker pool | next |
-| 3 | Python harness: LangGraph FSM, hype scoring, Playwright stage | |
-| 4 | Self-healing AST repair loop | |
-| 5 | Next.js admin panel over the results stream | |
+| **2b** | Go ingest: RA availability adapter, fingerprint diff engine, watchlist scheduler, bounded worker pool, cross-source resolver | **done** — verified against `cmd/mock-ra`; live run needs only `RA_AREAS` |
+| **3** | Python harness: LangGraph FSM, hype scoring, Playwright stage | **done** — verified Go→Redis→harness end to end; `assist` navigates a real browser |
+| **4** | Self-healing AST repair loop | **done** — verified against a fake LLM; live Claude behavior unverified (no key) |
+| **5** | Next.js admin panel over the results stream | **done** — SSE tail, FSM detail, health strip, four overrides; verified against live Redis and Postgres |
+
+### Known gaps
+
+- **The harness exposes no Prometheus endpoint.** Its measured stage latency is
+  stored durably in `drop_transitions`; the Go service exposes Prometheus
+  metrics for ingestion.
+- **`artists.sound_signature` is never populated.** It needs audio analysis
+  (BPM/key extraction) that no adapter performs, so the 0.25 sound weight is
+  currently unearnable and is excluded from the denominator at runtime — see §6.
+- **The `assist` path navigates but has never reached a sale page.** Chromium is
+  installed and the stage now launches it, resolves the URL, and classifies the
+  HTTP status for real — a `RESERVING` attempt against `ra.co` returns 403,
+  which is a correct outcome rather than a defect, since RA refuses headless
+  clients. What remains unproven is everything downstream of a *successful*
+  navigation: selector resolution against real DOM, and therefore a self-heal
+  provoked by an actual selector miss rather than an injected one.
+- **Neither real API client has been called.** `VoyageEmbedder` and
+  `ClaudeClient` are tested against mock transports only.
+- **The panel has no authentication.** It exposes four mutating endpoints and
+  binds to localhost. That is adequate for a single operator on one machine and
+  is not adequate for anything reachable from a network; deploying it anywhere
+  else needs an auth layer in front, not a change to the panel.
+- **The panel's SSE tail holds one Redis connection per connected browser.**
+  Fine for one operator, wrong past roughly a dozen — see `admin-panel/README.md`.
