@@ -65,6 +65,25 @@ async def test_third_delivery_dead_letters_existing_drop(cfg, store, bus) -> Non
     assert bus.acked == ["1-0"]
 
 
+async def test_delivery_limit_waits_for_stale_claim_to_expire(cfg, store, bus) -> None:
+    bus.claim_succeeds = False
+    await Worker(cfg, store, bus, FakeNotifier()).handle(
+        StreamEntry("1-0", stream_fields(), delivery_count=3)
+    )
+    assert store.dead_letters == []
+    assert bus.acked == []
+
+
+async def test_delivery_limit_acks_terminal_drop_without_dead_letter(cfg, store, bus) -> None:
+    drop_id = stream_fields()["drop_id"]
+    store.states[drop_id] = DropState.NOTIFIED
+    await Worker(cfg, store, bus, FakeNotifier()).handle(
+        StreamEntry("1-0", stream_fields(), delivery_count=3)
+    )
+    assert store.dead_letters == []
+    assert bus.acked == ["1-0"]
+
+
 async def test_malformed_message_is_dead_lettered(cfg, store, bus) -> None:
     await Worker(cfg, store, bus, FakeNotifier()).handle(
         StreamEntry("1-0", stream_fields(change="announced"))
