@@ -14,6 +14,7 @@ type AppUser = {
 };
 
 const providers: NextAuthConfig["providers"] = [];
+const localUserEmail = process.env.LOCAL_USER_EMAIL?.trim().toLowerCase();
 
 if (process.env.AUTH_GITHUB_ID && process.env.AUTH_GITHUB_SECRET) {
   providers.push(
@@ -33,20 +34,25 @@ if (process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET) {
   );
 }
 
-if (process.env.PUBLIC_DEMO_MODE === "true" || process.env.NODE_ENV !== "production") {
+if (
+  localUserEmail ||
+  process.env.PUBLIC_DEMO_MODE === "true" ||
+  process.env.NODE_ENV !== "production"
+) {
   providers.push(
     Credentials({
-      id: "demo",
-      name: "Local demo",
+      id: "local",
+      name: localUserEmail ? "Local account" : "Local demo",
       credentials: {},
       async authorize() {
-        const email = "demo@local.invalid";
+        const email = localUserEmail ?? "demo@local.invalid";
+        const name = localUserEmail ? "Local user" : "Demo user";
         const rows = await query<AppUser>(
           `INSERT INTO users (email, name)
-           VALUES ($1, 'Demo user')
+           VALUES ($1, $2)
            ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name
            RETURNING id::text, email, name, role::text AS role`,
-          [email],
+          [email, name],
         );
         return rows[0] ?? null;
       },

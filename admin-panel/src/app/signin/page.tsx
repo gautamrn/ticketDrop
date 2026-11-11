@@ -7,7 +7,10 @@ export default async function SignInPage() {
   if (session?.user) redirect("/app");
 
   const demoEnabled =
-    process.env.PUBLIC_DEMO_MODE === "true" || process.env.NODE_ENV !== "production";
+    Boolean(process.env.LOCAL_USER_EMAIL) ||
+    process.env.PUBLIC_DEMO_MODE === "true" ||
+    process.env.NODE_ENV !== "production";
+  const localAccount = Boolean(process.env.LOCAL_USER_EMAIL);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md items-center px-6">
@@ -48,11 +51,11 @@ export default async function SignInPage() {
             <form
               action={async () => {
                 "use server";
-                await signIn("demo", { redirectTo: "/app" });
+                await signIn("local", { redirectTo: "/app" });
               }}
             >
               <button className="w-full rounded-md border border-accent px-4 py-2 text-sm text-accent">
-                Open local demo
+                {localAccount ? "Open local account" : "Open local demo"}
               </button>
             </form>
           )}

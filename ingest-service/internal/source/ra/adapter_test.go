@@ -2,6 +2,7 @@ package ra
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -112,11 +113,26 @@ func TestEnumerateMapsEvents(t *testing.T) {
 		if r.Header.Get("Referer") == "" {
 			t.Error("client did not send a Referer")
 		}
+		var payload struct {
+			Variables struct {
+				Filters struct {
+					Areas struct {
+						Eq int `json:"eq"`
+					} `json:"areas"`
+				} `json:"filters"`
+			} `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if payload.Variables.Filters.Areas.Eq != 19 {
+			t.Errorf("area variable = %d, want GraphQL Int 19", payload.Variables.Filters.Areas.Eq)
+		}
 		_, _ = w.Write([]byte(listingResponse))
 	}))
 	defer srv.Close()
 
-	a := NewAdapter(NewClient(srv.URL, "test-agent", 5*time.Second), []string{"19"}, 60*24*time.Hour)
+	a := NewAdapter(NewClient(srv.URL, "test-agent", 5*time.Second), []int{19}, 60*24*time.Hour)
 	events, err := a.Enumerate(context.Background(), 50)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -164,7 +180,7 @@ func TestSnapshotReadsSaleState(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := NewAdapter(NewClient(srv.URL, "test-agent", 5*time.Second), []string{"19"}, time.Hour)
+	a := NewAdapter(NewClient(srv.URL, "test-agent", 5*time.Second), []int{19}, time.Hour)
 	snap, err := a.Snapshot(context.Background(), "90001")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -1,0 +1,129 @@
+name: ticketdrop-real
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ticketdrop}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ticketdrop}
+      POSTGRES_DB: ${POSTGRES_DB:-ticketdrop}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test \"$$(cat /proc/1/comm)\" = postgres && pg_isready -U ${POSTGRES_USER:-ticketdrop} -d ${POSTGRES_DB:-ticketdrop}",
+        ]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  ingest:
+    build: ./ingest-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ticketdrop}:${POSTGRES_PASSWORD:-ticketdrop}@postgres:5432/${POSTGRES_DB:-ticketdrop}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      REDIS_STREAM: ticket:drops
+      REDIS_STREAM_MAXLEN: "100000"
+      RA_GRAPHQL_URL: https://ra.co/graphql
+      RA_USER_AGENT: ${RA_USER_AGENT:?set RA_USER_AGENT}
+      RA_AREAS: "19"
+      RA_LOOKAHEAD_DAYS: ${RA_LOOKAHEAD_DAYS:-60}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-5000}
+      POLL_TIMEOUT_MS: ${POLL_TIMEOUT_MS:-4000}
+      RA_BATCH_SIZE: ${RA_BATCH_SIZE:-100}
+      RA_WORKERS: ${RA_WORKERS:-6}
+      RA_QUEUE_SIZE: ${RA_QUEUE_SIZE:-150}
+      RA_ENUMERATE_INTERVAL_MS: ${RA_ENUMERATE_INTERVAL_MS:-900000}
+      INGEST_METRICS_ADDR: :2112
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:2112/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  harness:
+    build: ./agent-harness
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ticketdrop}:${POSTGRES_PASSWORD:-ticketdrop}@postgres:5432/${POSTGRES_DB:-ticketdrop}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      HARNESS_MAX_CONCURRENCY: ${HARNESS_MAX_CONCURRENCY:-4}
+      HARNESS_HEALTH_PORT: "2113"
+      SCOUT_INTERVAL_MS: ${SCOUT_INTERVAL_MS:-60000}
+      SCOUT_TIMEOUT_MS: ${SCOUT_TIMEOUT_MS:-5000}
+      SUBSCRIPTION_RECONCILE_INTERVAL_MS: ${SUBSCRIPTION_RECONCILE_INTERVAL_MS:-15000}
+      SUBSCRIPTION_RECONCILE_TIMEOUT_MS: ${SUBSCRIPTION_RECONCILE_TIMEOUT_MS:-5000}
+      RESEND_API_KEY: ${RESEND_API_KEY:?set RESEND_API_KEY}
+      ALERT_FROM_EMAIL: "${ALERT_FROM_EMAIL:-TicketDrop <onboarding@resend.dev>}"
+      APP_BASE_URL: http://localhost:3000
+      UNSUBSCRIBE_SECRET: ${UNSUBSCRIBE_SECRET:?set UNSUBSCRIBE_SECRET}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      ingest: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:2113/readyz', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  panel:
+    build: ./admin-panel
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ticketdrop}:${POSTGRES_PASSWORD:-ticketdrop}@postgres:5432/${POSTGRES_DB:-ticketdrop}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET}
+      AUTH_URL: http://localhost:3000
+      AUTH_TRUST_HOST: "true"
+      LOCAL_USER_EMAIL: ${LOCAL_USER_EMAIL:?set LOCAL_USER_EMAIL}
+      RA_AREAS: "19"
+      PUBLIC_DEMO_MODE: "false"
+      UNSUBSCRIBE_SECRET: ${UNSUBSCRIBE_SECRET:?set UNSUBSCRIBE_SECRET}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      harness: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  postgres-data:
+  redis-data:

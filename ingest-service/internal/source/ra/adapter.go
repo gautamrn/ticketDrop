@@ -20,11 +20,11 @@ const (
 // the only way to obtain RA event ids for the watchlist.
 type Adapter struct {
 	client    *Client
-	areaIDs   []string
+	areaIDs   []int
 	lookahead time.Duration
 }
 
-func NewAdapter(client *Client, areaIDs []string, lookahead time.Duration) *Adapter {
+func NewAdapter(client *Client, areaIDs []int, lookahead time.Duration) *Adapter {
 	return &Adapter{client: client, areaIDs: areaIDs, lookahead: lookahead}
 }
 
@@ -181,17 +181,18 @@ func marshalOrNull(v any) json.RawMessage {
 }
 
 // ParseAreaIDs accepts the numeric area codes RA uses in its event URLs.
-func ParseAreaIDs(vals []string) []string {
-	out := make([]string, 0, len(vals))
+func ParseAreaIDs(vals []string) []int {
+	out := make([]int, 0, len(vals))
 	for _, v := range vals {
 		v = strings.TrimSpace(v)
 		if v == "" {
 			continue
 		}
-		if _, err := strconv.Atoi(v); err != nil {
+		id, err := strconv.Atoi(v)
+		if err != nil {
 			continue
 		}
-		out = append(out, v)
+		out = append(out, id)
 	}
 	return out
 }
