@@ -42,27 +42,41 @@ func (p *Publisher) Ping(ctx context.Context) error { return p.rdb.Ping(ctx).Err
 func (p *Publisher) Close() error                   { return p.rdb.Close() }
 
 type Drop struct {
+	ID          string
 	Change      string
 	Event       source.Event
 	Fingerprint string
 	DetectedAt  time.Time
 }
 
-// Publish appends one drop and returns the generated drop_id, which is the
-// idempotency key for the rest of the pipeline.
+func NewDropID() (string, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return "", fmt.Errorf("stream: generate drop id: %w", err)
+	}
+	return id.String(), nil
+}
+
+// Publish appends one drop and returns its drop_id, which is the idempotency
+// key for the rest of the pipeline. Outbox retries supply a stable ID; direct
+// callers receive a newly generated one.
 //
 // MAXLEN with '~' trims approximately, letting Redis stop at a node boundary.
 // Exact trimming would walk the radix tree on every append, adding latency to
 // the one path we hold to a 50 ms budget.
 func (p *Publisher) Publish(ctx context.Context, d Drop) (string, error) {
-	dropID, err := uuid.NewV7()
-	if err != nil {
-		return "", fmt.Errorf("stream: generate drop id: %w", err)
+	dropID := d.ID
+	if dropID == "" {
+		var err error
+		dropID, err = NewDropID()
+		if err != nil {
+			return "", err
+		}
 	}
 
 	ev := d.Event
 	values := map[string]any{
-		"drop_id":     dropID.String(),
+		"drop_id":     dropID,
 		"source":      ev.Source,
 		"event_id":    ev.SourceEventID,
 		"event_url":   ev.ContentURL,
@@ -87,7 +101,7 @@ func (p *Publisher) Publish(ctx context.Context, d Drop) (string, error) {
 	}).Err(); err != nil {
 		return "", fmt.Errorf("stream: xadd: %w", err)
 	}
-	return dropID.String(), nil
+	return dropID, nil
 }
 
 func venueName(ev source.Event) string {

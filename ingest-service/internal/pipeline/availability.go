@@ -19,12 +19,11 @@ import (
 // Availability polls watchlisted events on a fast cadence, diffs each result
 // against the last observed snapshot, and publishes only classified changes.
 type Availability struct {
-	adapter   source.AvailabilityAdapter
-	store     *store.Store
-	cache     *cache.Store
-	publisher *stream.Publisher
-	pool      *pool.Pool
-	log       *slog.Logger
+	adapter source.AvailabilityAdapter
+	store   *store.Store
+	cache   *cache.Store
+	pool    *pool.Pool
+	log     *slog.Logger
 
 	interval  time.Duration
 	batchSize int
@@ -34,7 +33,6 @@ func NewAvailability(
 	adapter source.AvailabilityAdapter,
 	st *store.Store,
 	c *cache.Store,
-	pub *stream.Publisher,
 	p *pool.Pool,
 	log *slog.Logger,
 	interval time.Duration,
@@ -44,7 +42,6 @@ func NewAvailability(
 		adapter:   adapter,
 		store:     st,
 		cache:     c,
-		publisher: pub,
 		pool:      p,
 		log:       log.With("source", adapter.Name()),
 		interval:  interval,
@@ -143,40 +140,44 @@ func (a *Availability) check(ctx context.Context, item store.WatchItem) {
 		return // nothing changed, the overwhelmingly common case
 	}
 
-	// Persist the transition before deciding whether it is alertable, so the
-	// history records what we saw even when we choose not to act on it.
-	if err := a.store.RecordSnapshot(ctx, item.EventID, fp, snap); err != nil {
-		a.log.Warn("record snapshot failed", "event", item.SourceEventID, "err", err)
-	}
-	if err := a.cache.Save(ctx, name, snap); err != nil {
-		a.log.Warn("snapshot save failed", "event", item.SourceEventID, "err", err)
-		return
-	}
-
 	change, ok := fingerprint.Classify(prev, snap)
 	if !ok {
 		// The fingerprint moved but no rule explains it: a flyer swap, a
-		// description edit, a dateUpdated bump. Recorded above, not alerted.
+		// description edit, or a dateUpdated bump. Record it, but do not alert.
+		if err := a.store.RecordSnapshot(ctx, item.EventID, fp, snap); err != nil {
+			a.log.Warn("record snapshot failed", "event", item.SourceEventID, "err", err)
+			return
+		}
+		if err := a.cache.Save(ctx, name, snap); err != nil {
+			a.log.Warn("snapshot save failed", "event", item.SourceEventID, "err", err)
+			return
+		}
 		metrics.UnclassifiedChange.WithLabelValues(name).Inc()
 		a.log.Debug("unclassified change", "event", item.SourceEventID)
 		return
 	}
 
-	if err := a.publish(ctx, item, snap, fp, change); err != nil {
-		a.log.Error("publish failed", "event", item.SourceEventID, "err", err)
+	enqueued, err := a.enqueue(ctx, item, snap, fp, change)
+	if err != nil {
+		a.log.Error("outbox enqueue failed", "event", item.SourceEventID, "err", err)
+		return
+	}
+	if err := a.cache.Save(ctx, name, snap); err != nil {
+		a.log.Warn("snapshot save failed after outbox commit", "event", item.SourceEventID, "err", err)
 		return
 	}
 	a.log.Info("drop detected",
 		"event", item.SourceEventID, "title", item.Title, "change", change,
+		"outbox_new", enqueued,
 		"took", time.Since(started).Round(time.Millisecond).String())
 }
 
-func (a *Availability) publish(
+func (a *Availability) enqueue(
 	ctx context.Context,
 	item store.WatchItem,
 	snap source.Snapshot,
 	fp, change string,
-) error {
+) (bool, error) {
 	// Merge the durable catalogue fields with the freshly observed state. The
 	// snapshot is authoritative for anything that can change mid-sale.
 	ev := source.Event{
@@ -198,16 +199,17 @@ func (a *Availability) publish(
 		ev.Artists = append(ev.Artists, source.Artist{Name: name})
 	}
 
-	started := time.Now()
-	_, err := a.publisher.Publish(ctx, stream.Drop{
+	dropID, err := stream.NewDropID()
+	if err != nil {
+		return false, err
+	}
+	return a.store.RecordSnapshotAndEnqueueDrop(ctx, item.EventID, fp, snap, stream.Drop{
+		ID:          dropID,
 		Change:      change,
 		Event:       ev,
 		Fingerprint: fp,
 		DetectedAt:  snap.ObservedAt,
 	})
-	metrics.PublishDuration.WithLabelValues(item.Source).Observe(time.Since(started).Seconds())
-	metrics.PublishTotal.WithLabelValues(item.Source, change, statusOf(err)).Inc()
-	return err
 }
 
 func raStatus(err error) string {

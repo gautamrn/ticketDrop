@@ -95,10 +95,12 @@ func run() error {
 		}
 
 		workers := pool.New(cfg.RA.Workers, cfg.RA.QueueSize)
-		availability := pipeline.NewAvailability(raAdapter, st, snapshots, pub, workers, log,
+		availability := pipeline.NewAvailability(raAdapter, st, snapshots, workers, log,
 			cfg.RA.PollInterval, cfg.RA.BatchSize)
 		group.Go(func() error { return availability.Run(gctx) })
-		started += 2
+		outbox := pipeline.NewOutboxDispatcher(st, pub, log)
+		group.Go(func() error { return outbox.Run(gctx) })
+		started += 3
 	} else {
 		log.Warn("RA_AREAS not set, availability tier disabled")
 	}

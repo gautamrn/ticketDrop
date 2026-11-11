@@ -3,6 +3,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ticketdrop/ingest/internal/source"
+	"ticketdrop/ingest/internal/stream"
 )
 
 type Store struct{ pool *pgxpool.Pool }
@@ -233,6 +235,129 @@ func (s *Store) RecordSnapshot(ctx context.Context, eventID, fp string, snap sou
 		rawOrNull(snap.Raw), snap.ObservedAt)
 	if err != nil {
 		return fmt.Errorf("store: record snapshot: %w", err)
+	}
+	return nil
+}
+
+// RecordSnapshotAndEnqueueDrop commits the observed transition and its outbound
+// message together. The cache may lag this transaction, so the uniqueness key
+// makes a repeated observation return the existing outbox item.
+func (s *Store) RecordSnapshotAndEnqueueDrop(
+	ctx context.Context,
+	eventID, fp string,
+	snap source.Snapshot,
+	drop stream.Drop,
+) (bool, error) {
+	payload, err := json.Marshal(drop)
+	if err != nil {
+		return false, fmt.Errorf("store: marshal outbox drop: %w", err)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin snapshot outbox: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO event_snapshots (
+			event_id, fingerprint, is_ticketed, cost, presale_status,
+			resale_active, queue_it, event_status, attending, interested_count,
+			date_updated, raw, observed_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13)`,
+		eventID, fp, snap.IsTicketed, nullStr(snap.Cost), nullStr(snap.PresaleStatus),
+		snap.ResaleActive, snap.QueueIt, nullStr(snap.EventStatus),
+		snap.Attending, snap.InterestedCount, snap.DateUpdated,
+		rawOrNull(snap.Raw), snap.ObservedAt,
+	); err != nil {
+		return false, fmt.Errorf("store: record outbox snapshot: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO ingest_outbox (id, event_id, fingerprint, payload)
+		VALUES ($1, $2, $3, $4::jsonb)
+		ON CONFLICT (event_id, fingerprint) DO NOTHING`,
+		drop.ID, eventID, fp, payload,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: enqueue outbox drop: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit snapshot outbox: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+type OutboxItem struct {
+	ID       string
+	Payload  []byte
+	Attempts int
+}
+
+func (s *Store) ClaimOutbox(
+	ctx context.Context,
+	limit int,
+	lease time.Duration,
+) ([]OutboxItem, error) {
+	rows, err := s.pool.Query(ctx, `
+		WITH due AS (
+			SELECT id
+			FROM ingest_outbox
+			WHERE published_at IS NULL
+			  AND next_attempt_at <= now()
+			  AND (locked_until IS NULL OR locked_until <= now())
+			ORDER BY next_attempt_at, created_at
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE ingest_outbox o
+		SET locked_until = now() + make_interval(secs => $2),
+		    attempts = attempts + 1,
+		    last_error = NULL
+		FROM due
+		WHERE o.id = due.id
+		RETURNING o.id::text, o.payload, o.attempts`,
+		limit, int(lease.Seconds()),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: claim outbox: %w", err)
+	}
+	defer rows.Close()
+
+	var items []OutboxItem
+	for rows.Next() {
+		var item OutboxItem
+		if err := rows.Scan(&item.ID, &item.Payload, &item.Attempts); err != nil {
+			return nil, fmt.Errorf("store: scan outbox: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) MarkOutboxPublished(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE ingest_outbox
+		SET published_at = now(), locked_until = NULL, last_error = NULL
+		WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("store: mark outbox published: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) RetryOutbox(
+	ctx context.Context,
+	id, reason string,
+	delay time.Duration,
+) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE ingest_outbox
+		SET locked_until = NULL,
+		    next_attempt_at = now() + make_interval(secs => $2),
+		    last_error = $3
+		WHERE id = $1`, id, int(delay.Seconds()), reason)
+	if err != nil {
+		return fmt.Errorf("store: retry outbox: %w", err)
 	}
 	return nil
 }
