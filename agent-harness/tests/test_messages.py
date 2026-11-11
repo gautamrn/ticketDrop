@@ -4,7 +4,7 @@ from datetime import UTC
 
 import pytest
 
-from conftest import announced_fields, stream_fields
+from conftest import stream_fields
 from harness.messages import MalformedMessage, parse
 
 
@@ -12,22 +12,11 @@ def test_parses_the_publisher_field_set():
     msg = parse(stream_fields())
 
     assert msg.source == "ra"
-    assert msg.source_event_id == "ra-1234"
-    assert msg.artists == ("DVS1", "Rrose", "Anastasia Kristensen")
+    assert msg.source_event_id == "90001"
+    assert msg.artists == ("Prospa",)
     assert msg.attending == 412
     assert msg.queue_it is False
     assert msg.detected_at.tzinfo is not None
-    assert msg.is_discovery is False
-
-
-def test_announced_message_has_empty_fingerprint_and_no_attendance():
-    msg = parse(announced_fields())
-
-    assert msg.is_discovery is True
-    assert msg.fingerprint == ""
-    # Absent is not zero: EDMTrain has no attendance signal, and folding that
-    # into 0 would report "nobody is going" for every discovered show.
-    assert msg.attending is None
 
 
 def test_nanosecond_timestamps_from_go_are_accepted():
@@ -38,15 +27,15 @@ def test_nanosecond_timestamps_from_go_are_accepted():
 
 
 def test_deep_link_prefers_ticket_link_unmodified():
-    msg = parse(stream_fields(ticket_link="https://edmtrain.com/e/9876?utm=x"))
+    msg = parse(stream_fields(ticket_link="https://seller.example/9876?utm=x"))
 
-    assert msg.deep_link == "https://edmtrain.com/e/9876?utm=x"
+    assert msg.deep_link == "https://seller.example/9876?utm=x"
 
 
 def test_deep_link_falls_back_to_event_url():
     msg = parse(stream_fields(ticket_link=""))
 
-    assert msg.deep_link == "https://ra.co/events/1234"
+    assert msg.deep_link == "https://ra.co/events/90001"
 
 
 @pytest.mark.parametrize(
@@ -54,6 +43,7 @@ def test_deep_link_falls_back_to_event_url():
     [
         ("drop_id", ""),
         ("source", "ticketmaster"),
+        ("change", "announced"),
         ("change", "price_drop"),
         ("event_id", ""),
         ("detected_at", "not-a-timestamp"),

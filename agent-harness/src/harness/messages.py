@@ -10,19 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-CHANGE_ANNOUNCED = "announced"
 CHANGE_NEW_TICKETED = "new_ticketed"
 CHANGE_TIER_AVAILABLE = "tier_available"
 CHANGE_RETURNED_TO_SALE = "returned_to_sale"
 
-# Only these three come from the availability tier and can justify a
-# reservation attempt. "announced" means the show exists, not that anything is
-# buyable, so it can never reach RESERVING (ARCHITECTURE.md §4).
 AVAILABILITY_CHANGES = frozenset(
     {CHANGE_NEW_TICKETED, CHANGE_TIER_AVAILABLE, CHANGE_RETURNED_TO_SALE}
 )
-VALID_CHANGES = AVAILABILITY_CHANGES | {CHANGE_ANNOUNCED}
-VALID_SOURCES = frozenset({"ra", "edmtrain"})
+VALID_CHANGES = AVAILABILITY_CHANGES
+VALID_SOURCES = frozenset({"ra"})
 
 
 class MalformedMessage(ValueError):
@@ -48,17 +44,8 @@ class DropMessage:
     raw: str
 
     @property
-    def is_discovery(self) -> bool:
-        return self.change == CHANGE_ANNOUNCED
-
-    @property
     def deep_link(self) -> str:
-        """The URL a human is sent to.
-
-        Returned verbatim. EDMTrain's terms require its event link be displayed
-        unmodified (ARCHITECTURE.md §10.1), so no redirect wrapper and no
-        tracking parameters are added anywhere in the pipeline.
-        """
+        """Return the unmodified outbound seller link, falling back to RA."""
         return self.ticket_link or self.event_url
 
 
@@ -114,9 +101,6 @@ def _artists(value: str) -> tuple[str, ...]:
 
 
 def _optional_int(fields: dict[str, str], key: str) -> int | None:
-    """Absent is not zero. EDMTrain has no attendance signal at all, and
-    treating that as "nobody is going" would suppress every discovery-tier
-    score rather than marking the signal missing."""
     raw = _text(fields, key)
     if not raw:
         return None

@@ -1,84 +1,84 @@
 ---
-description: TicketDrop Architecture & Stack Boundaries
+description: TicketDrop architecture and service boundaries
 globs: **/*
 alwaysApply: true
 ---
 
-# TicketDrop — Architectural Boundaries
+# TicketDrop architectural boundaries
 
 Read `ARCHITECTURE.md` before proposing cross-service changes.
 
+## Product boundary
+
+TicketDrop is an RA-only, alert-only onsale-signal product. A user selects one
+configured RA metro and saves direct artist or venue labels. The system may
+enumerate and poll RA, classify observable sale-state changes, and send links.
+It must not fetch seller pages, enter queues, solve CAPTCHAs, submit payments,
+or evade account or purchase limits.
+
 ## Service ownership
 
-- `ingest-service/` — **Go 1.25**, `net/http`. Owns all outbound polling of ticketing
-  sources and all writes to the Redis Stream. Never imports Python, never drives
-  a browser, never calls an LLM.
-- `agent-harness/` — **Python 3.12+**, LangGraph, async Playwright. Owns the
-  finite state machine, hype evaluation, and browser execution. Only reads from
-  the Redis Stream via a consumer group; never polls a ticketing source directly.
-- `admin-panel/` — **Next.js (App Router)**, Tailwind, **SSE** (not WebSockets:
- the feed is server-to-client only and overrides are POSTs, so a bidirectional
- transport would cost a custom server to buy a channel nothing sends on). Read
- model over the pipeline plus a narrow set of operator overrides. Contains no
- business logic that the harness needs to make a decision — in particular, it
- does not embed text, so adding a preference is a harness CLI operation rather
- than a panel form.
-- `db/` — schema is the contract between services. Any column added for one
-  service must be documented in `ARCHITECTURE.md`.
+- `ingest-service/` — Go 1.25 and `net/http`. The only caller of RA and the only
+  writer to Redis Stream `ticket:drops`. Owns catalogue enumeration,
+  availability polling, fingerprints, classification, catalogue tables, and
+  `event_snapshots`.
+- `agent-harness/` — Python 3.12+ async service. The only consumer-group worker
+  for `ticket:drops`. Owns scout matching, subscription reconciliation,
+  `watchlist`, `drops`, `drop_transitions`, and notification delivery. It never
+  polls RA.
+- `admin-panel/` — Next.js App Router and Tailwind. Owns authenticated settings,
+  direct `user_preferences` writes, explicit Watch/Unwatch, personal read
+  models, and operator controls. Recent alerts and drops come from Postgres;
+  Redis is read only for stream health.
+- `db/` — the schema is the contract between services. Document cross-service
+  ownership changes in `ARCHITECTURE.md`.
 
-### Table ownership, and its one exception
+Go normally owns `venues`, `artists`, `events`, `event_artists`,
+`event_snapshots`, and `ingest_watermarks`. Python owns `watchlist`,
+`event_subscriptions`, `drops`, `drop_transitions`, and
+`notification_deliveries`. Next.js owns user settings and preferences and may
+write explicit subscriptions.
 
-The Go service owns the catalogue (`events`, `venues`, `artists`,
-`event_artists`, `event_links`, `event_snapshots`, `ingest_watermarks`). The
-harness owns the FSM record (`drops`, `drop_transitions`, `selector_overrides`)
-and `watchlist`.
+Python may upsert a stub `events` row when a valid stream message names a
+missing event. The upsert must be conflict-safe, log a warning, and mark
+`stubbed_event` in transition detail so Go can correct it on its next catalogue
+upsert.
 
-The harness may insert a **stub `events` row** when a stream message names an
-event the catalogue does not have. This is a deliberate exception, not drift:
-`drops.event_id` is `NOT NULL`, so without a row there is nowhere to record that
-the drop happened, and discarding the message to protect a boundary loses the
-audit trail the boundary exists to keep. The insert must be `ON CONFLICT DO
-UPDATE`, must log a warning, and must mark the row as stubbed in the transition
-detail so it is distinguishable from catalogue data. The ingester's next upsert
-corrects it.
+## Hard invariants
 
-## Hard boundaries
+- Redis Streams is the only ingest-to-worker channel. No direct service call or
+  shared in-process state.
+- Postgres is durable. Redis contains the event log, poll snapshot cache, and
+  short-lived claim keys. Redis loss may repeat work but must not create a
+  second drop row or intentional second email.
+- `drops` stays unique on `(event_id, fingerprint)`.
+- Deliveries stay unique on `(drop_id, user_id, channel)`, and retries reuse
+  `drop-<drop_id>-user-<user_id>-email`.
+- Reconciliation creates one shared watch row per RA event regardless of
+  subscriber count.
+- Unwatch sets `active = false` and `user_disabled = true`; the scout must not
+  reactivate that row.
+- Artist and venue matching uses normalized full names, not fuzzy matching.
+- Secrets come from the environment and blocking calls have explicit timeouts.
 
-- Redis Streams is the **only** channel between ingestion and the harness. No
-  direct HTTP calls, no shared in-process state.
-- The Go service is the only writer to `ticket:drops`. The harness is the only
-  writer to `ticket:drops:results`.
-- Postgres is the durable record. Redis holds the event log and caches only
-  (selector overrides, dedupe sets); losing Redis must never lose a decision.
-- Secrets come from the environment. Never inline a token, cookie, or API key.
+## Detection semantics
 
-## Latency discipline
+The first RA observation is a silent baseline. Publish only a classified later
+change: presale activation, ticketed false-to-true, resale false-to-true, or
+normalized cost change while ticketed. `dateUpdated` participates in the
+fingerprint but never classifies a change alone. Exclude `attending` and
+`interestedCount` from the fingerprint.
 
-- Ingestion poll → stream append: **p99 < 50 ms** (excluding network RTT to the
-  source).
-- Every harness stage writes a row to `drop_transitions` with its measured
-  `latency_ms`. A stage that cannot be measured cannot be optimized.
-- Any blocking call inside a Goroutine or coroutine needs an explicit timeout.
-  Unbounded `await` / channel receive is a review failure.
+## Latency and testing
 
-## Testing
-
-- Go: **table-driven tests** (`tests := []struct{name string; ...}`) with
-  `t.Run(tt.name, ...)`. Stream assertions use an in-memory double, never live Redis.
-- Python: **pytest** specs, `pytest-asyncio` for coroutines. Every FSM node gets
-  a test that asserts its output state and that it terminates.
-- Anything touching the network in a test must be faked or recorded.
-
-## Source adapters
-
-- New ticketing sources implement the `SourceAdapter` interface described in
-  `ARCHITECTURE.md`. Do not special-case a vendor inside the polling loop.
-- Ingestion is two-tier: **discovery** (EDMTrain, ~60 s, server-side change feed
-  via `createdStartDate`) and **availability** (RA, ~2 s, fingerprint diff,
-  watchlisted events only). An adapter belongs to exactly one tier.
-- Respect each source's `robots.txt`, rate limits, and Terms of Service. Never
-  add code whose purpose is to defeat a CAPTCHA, a Queue-it waiting room, or a
-  per-account purchase limit.
-- EDMTrain specifically: one key, one sequential loop, no parallel fan-out, no
-  burst retries. Its event link must be rendered unmodified wherever an event is
-  displayed. See `ARCHITECTURE.md` §10.1.
+- Keep the RA poll interval configurable with a 500 ms floor. Production starts
+  at 5 seconds, six workers, and one metro.
+- Treat poll delay and stream-to-email latency as separate measurements.
+- Every terminal worker outcome appends `drop_transitions` with measured queue
+  lag and classification detail.
+- Go tests are table-driven and use local doubles for network and stream work.
+- Python coroutine tests use `pytest-asyncio`; cover claim, reclaim,
+  dead-letter, duplicate fingerprint, disabled subscription, and email
+  idempotency behavior.
+- Network access in tests must be faked or explicitly isolated as an integration
+  check.

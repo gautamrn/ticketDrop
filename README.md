@@ -1,85 +1,55 @@
 # TicketDrop
 
-Low-latency detection of unannounced house-music ticket drops across Resident
-Advisor and EDMTrain, with vector-based hype scoring and a bounded,
-self-healing browser assist stage.
-
-Design decisions, the state machine, the latency budget, and the failure-mode
-analysis all live in **[`ARCHITECTURE.md`](./ARCHITECTURE.md)**. Read that first.
+TicketDrop is an RA-only onsale-signal service. Users choose one configured
+Resident Advisor metro and follow exact artist or venue names. The system polls
+each watched show once, detects a classified sale-state change, and sends each
+subscriber an audited email containing the RA and seller links.
 
 [![CI](https://github.com/gautamrn/ticketDrop/actions/workflows/ci.yml/badge.svg)](https://github.com/gautamrn/ticketDrop/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-**Stack:** Go · Redis Streams · PostgreSQL (pgvector) · Python / LangGraph · Next.js
+Key properties:
 
-**Verified:** 294 automated tests (Go + Python) passing, gated by GitHub Actions
-CI running lint, typecheck, and builds on every push. The pipeline guarantees
-at-least-once, zero-duplicate delivery — events survive worker crashes without
-being alerted twice.
+- The first observation is a silent baseline, not an alert.
+- Source traffic scales with unique watched events, not subscriber count.
+- Redis delivery is at least once; Postgres constraints and a stable email
+  idempotency key prevent duplicate side effects.
+- Artist and venue preferences are normalized full-name matches. There is no
+  fuzzy matching.
+- The product sends alerts only. It never navigates seller flows, waiting rooms,
+  CAPTCHAs, payments, or purchase limits.
 
-## Screenshots
-
-The admin panel runs over a live mock pipeline — a drop feed, an FSM
-transition trace per drop, and a service health strip. Capture guide:
-[`docs/screenshots/`](./docs/screenshots/README.md).
-
-Ingestion runs in two tiers. **Discovery** polls EDMTrain once a minute using its
-`createdStartDate` change feed to learn what shows exist. **Availability** polls
-Resident Advisor every two seconds against a watchlist, fingerprinting each
-event's ticket state to catch a sale going live. They answer different questions
-and neither replaces the other.
-
-## Layout
-
-```
-.cursor/rules/          architectural boundaries + Socratic interview mode
-ARCHITECTURE.md         system design contract
-db/init/                Postgres + pgvector schema (runs on first boot)
-deploy/observability/   Prometheus config for the Go service
-docker-compose.yml      Redis Streams + pgvector, observability behind a profile
-ingest-service/         Go discovery and availability pollers
-agent-harness/          Python LangGraph FSM and browser assist
-admin-panel/            Next.js live operations panel
+```text
+RA catalogue → Go fingerprint/diff → Redis Stream → Python email fan-out
+                       │                       │
+                       └────── Postgres audit ─┘ ← Next.js user/operator views
 ```
 
-## Quickstart
+Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the observable RA fields,
+idempotency model, latency definition, and failure modes.
+
+![TicketDrop landing page](./docs/ticketdrop-landing.png)
+
+## Repository layout
+
+```text
+.cursor/rules/          enforced service boundaries
+db/init/                Postgres bootstrap schema
+deploy/                 production proxy, monitoring, backup guidance
+ingest-service/         Go RA enumeration, polling, and change detection
+agent-harness/          Python subscriptions, stream worker, and email delivery
+admin-panel/            Next.js authenticated product and operator UI
+scripts/                product smoke and synthetic load checks
+```
+
+## Local quickstart
+
+Prerequisites: Docker, Go 1.25, Python 3.12+, and Node.js.
 
 ```powershell
 Copy-Item .env.example .env
 docker compose up -d
-docker compose ps
-```
 
-With Go service metrics (Prometheus on http://localhost:9090):
-
-```powershell
-docker compose --profile observability up -d
-```
-
-Verify pgvector and the schema landed:
-
-```powershell
-docker compose exec postgres psql -U ticketdrop -d ticketdrop -c "\dt"
-docker compose exec postgres psql -U ticketdrop -d ticketdrop -c "SELECT extversion FROM pg_extension WHERE extname='vector';"
-```
-
-Verify Redis Streams:
-
-```powershell
-docker compose exec redis redis-cli XADD ticket:drops '*' probe 1
-docker compose exec redis redis-cli XLEN ticket:drops
-docker compose exec redis redis-cli DEL ticket:drops
-```
-
-The schema in `db/init/` is applied **only when the Postgres volume is empty**.
-After editing it during development, reset with:
-
-```powershell
-docker compose down -v; docker compose up -d
-```
-
-Install application dependencies once:
-
-```powershell
 cd agent-harness
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
@@ -88,94 +58,94 @@ npm ci
 cd ..
 ```
 
-## Running the full pipeline locally
-
-Five processes, no API keys. The mock sources serve the same contracts as the
-real ones, so this exercises every stage end to end.
+Run the contract-faithful RA source:
 
 ```powershell
-# 1-2. Mock sources
 cd ingest-service
-go run ./cmd/mock-edmtrain -addr :8099
-go run ./cmd/mock-ra       -addr :8098
+go run ./cmd/mock-ra -addr :8098
+```
 
-# 3. Ingest, pointed at the mocks. RA_DEV_SEED_WATCHLIST gives the
-#    availability loop something to poll before the harness promotes anything.
-$env:EDMTRAIN_API_KEY="mock-key"; $env:EDMTRAIN_BASE_URL="http://localhost:8099/api"
-$env:EDMTRAIN_LOCATION_IDS="1"; $env:EDMTRAIN_POLL_INTERVAL_MS="10000"
-$env:RA_GRAPHQL_URL="http://localhost:8098/graphql"; $env:RA_AREAS="19"
-$env:RA_ENUMERATE_INTERVAL_MS="20000"; $env:RESOLVE_INTERVAL_MS="20000"
+Run ingestion in another terminal. The development seed gives the availability
+loop events before a user subscription is created:
+
+```powershell
+cd ingest-service
+$env:RA_GRAPHQL_URL="http://localhost:8098/graphql"
+$env:RA_AREAS="19"
 $env:RA_DEV_SEED_WATCHLIST="3"
 go run ./cmd/ingest
-
-# 4. Harness. Seed preferences first or every drop scores zero.
-cd ../agent-harness
-.\.venv\Scripts\python.exe -m harness prefs add --kind artist --label "Prospa"
-.\.venv\Scripts\python.exe -m harness run
-
-# 5. Panel
-cd ../admin-panel; npm install; npm run dev   # http://localhost:3000
 ```
 
-Nothing happens until a source *changes* — the first sighting of an event
-records a baseline rather than emitting a drop, which is what stops the poll
-loop from reporting every watched event as a fresh drop on startup. Provoke one:
-
-```powershell
-curl.exe -X POST "http://localhost:8098/admin/presale?id=90001"   # presale opens
-curl.exe -X POST "http://localhost:8098/admin/ticketed?id=90002"  # tickets appear
-curl.exe -X POST "http://localhost:8099/admin/add"                # new announcement
-```
-
-## Going live (personal)
-
-Copy `.env.example` to `.env` at the repo root. All three services read that file.
-
-| Variable | Required? | Where to get it | What happens if empty |
-| --- | --- | --- | --- |
-| `EDMTRAIN_API_KEY` | **Yes** for discovery | Apply at [edmtrain.com/developer-api](https://edmtrain.com/developer-api) while signed in | Discovery tier disables; you only see RA events you seed or already watch |
-| `EDMTRAIN_LOCATION_IDS` | **Yes** with the key | `GET https://edmtrain.com/api/locations?state=Michigan&city=Detroit&client=<key>` | The API returns every upcoming event, which is slow and wasteful |
-| `RA_AREAS` | **Yes** for availability | City code in `ra.co/events/...` URLs (Detroit `19`, London `13`, Berlin `34`, NYC `8`) | Availability tier disables. No key needed |
-| `VOYAGE_API_KEY` | Recommended | [voyageai.com](https://www.voyageai.com/) | Exact artist-name matches still score 1.0; similar names score noise |
-| `ANTHROPIC_API_KEY` | No (`alert` mode) | [console.anthropic.com](https://console.anthropic.com/) | Self-heal uses canned selectors. Irrelevant unless you switch to `assist` |
-
-Then seed the artists you actually care about — an empty preference table scores every drop at zero:
+Run the worker and web app:
 
 ```powershell
 cd agent-harness
-.\.venv\Scripts\python.exe -m harness prefs add --kind artist --label "Prospa"
+.\.venv\Scripts\python.exe -m harness run
+
+# Separate terminal
+cd admin-panel
+npm run dev
 ```
 
-Keep http://localhost:3000 open. There is no push notification; the panel is the alert.
+Open http://localhost:3000, sign in with the local demo account, select metro
+19, and add an artist or venue preference. Without `RESEND_API_KEY`, email uses
+the log adapter while still recording delivery state.
 
-Running the discovery tier against the live API needs an EDMTrain client key,
-which you apply for while signed in at
-[edmtrain.com/developer-api](https://edmtrain.com/developer-api). Until it
-arrives, `ingest-service/cmd/mock-edmtrain` serves the same contract locally —
-see [`ingest-service/README.md`](./ingest-service/README.md).
+The first poll establishes a baseline. Trigger a later classified change:
+
+```powershell
+curl.exe -X POST "http://localhost:8098/admin/presale?id=90001"
+curl.exe -X POST "http://localhost:8098/admin/ticketed?id=90002"
+```
+
+The repeatable container integration check is:
+
+```powershell
+docker compose -f docker-compose.verify.yml up --build --abort-on-container-exit --exit-code-from verify
+```
 
 ## Security & history
 
-**Secrets were never committed.** `.env` has been gitignored from the first
-commit, no API keys (EDMTrain, Voyage, Anthropic) appear anywhere in the
-history, and `.env.example` carries placeholders only.
+`.env` has been gitignored from the first commit, no API keys appear in the
+repository history, and `.env.example` carries placeholders only.
 
-**What is deliberately excluded.** `.cursor/rules/interview-prep.mdc` is
-gitignored: it is personal context rather than architecture. `system-arch.mdc`
-*is* tracked on purpose — enforced architectural boundaries are part of how this
-project is built, and worth showing.
+## Configuration
 
-## Operating posture
+All services load the repository-root `.env`. The main runtime settings are:
 
-`RESERVATION_MODE` defaults to `alert`: detect, score, and notify, with no
-automated purchase path. See [`ARCHITECTURE.md` §10](./ARCHITECTURE.md) before
-changing it — automated ticket purchasing is regulated by the US BOTS Act and
-the UK's Breaching of Limits on Ticket Sales Regulations 2018, and events behind
-a Queue-it waiting room are forced to `alert` by design.
+- `DATABASE_URL`, `REDIS_URL`, and `REDIS_STREAM`;
+- `RA_AREAS`, `RA_GRAPHQL_URL`, `POLL_INTERVAL_MS`, `POLL_TIMEOUT_MS`,
+  `RA_WORKERS`, and `RA_ENUMERATE_INTERVAL_MS`;
+- `RESEND_API_KEY`, `ALERT_FROM_EMAIL`, `APP_BASE_URL`, and
+  `UNSUBSCRIBE_SECRET`;
+- Auth.js provider secrets for production sign-in.
 
-EDMTrain's API terms add three constraints, covered in
-[`ARCHITECTURE.md` §10.1](./ARCHITECTURE.md): its event links must be displayed
-unmodified, rate limits may not be circumvented, and its data may not be
-combined with other sources to build a competing public event-discovery service.
-That last clause is fine for a private tool and is a real blocker for a
-multi-user product.
+`POLL_INTERVAL_MS` defaults to 5000 and cannot be below 500. Empty `RA_AREAS`
+leaves ingestion disabled. Production starts with one metro and six RA workers.
+See each service README for its owned settings and endpoints.
+
+## Verification
+
+```powershell
+cd ingest-service; go test ./...
+cd ..\agent-harness
+.\.venv\Scripts\ruff.exe check src tests
+.\.venv\Scripts\pytest.exe -q
+cd ..\admin-panel
+npm run lint
+npx tsc --noEmit
+npm run build
+```
+
+The current synthetic stream-to-email report is in
+[docs/performance.md](./docs/performance.md). It deliberately excludes RA poll
+delay and network time.
+
+## Production posture
+
+The production profile runs Caddy, Next.js, Go, Python, Postgres, and Redis on
+one VPS; only Caddy is public. Confirm RA's current terms before live public
+polling. Use the labeled replay demo when live polling is not authorized.
+
+Never commit `.env` or credentials. Review [SECURITY.md](./SECURITY.md) and
+[deploy/README.md](./deploy/README.md) before deployment.

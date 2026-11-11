@@ -1,4 +1,4 @@
-"""TicketDrop agent harness: LangGraph FSM over the ticket:drops stream."""
+"""TicketDrop alert worker over the ticket:drops stream."""
 
 __all__ = ["__version__"]
 

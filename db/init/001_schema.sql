@@ -1,38 +1,13 @@
--- TicketDrop schema.
---
--- Vector dimension is 1024 to match Voyage AI `voyage-3`. Claude has no
--- embeddings endpoint. Changing models means changing this dimension and
--- reindexing; pgvector fixes dimensionality at column-creation time.
+-- TicketDrop RA-only alert product schema.
 
-CREATE EXTENSION IF NOT EXISTS vector;
-
-CREATE TYPE source_platform AS ENUM ('ra', 'edmtrain');
-
-CREATE TYPE drop_state AS ENUM (
-    'INGESTED',
-    'EVALUATING',
-    'RESERVING',
-    'SELF_HEAL',
-    'NOTIFIED',
-    'SKIPPED',
-    'FAILED'
-);
-
--- 'announced' comes from the discovery tier (EDMTrain createdDate) and means
--- "this show now exists", not "tickets are buyable". The other three come from
--- the availability tier and mean a real sale-state change.
-CREATE TYPE change_kind AS ENUM (
-    'announced',
-    'new_ticketed',
-    'tier_available',
-    'returned_to_sale'
-);
-
-CREATE TYPE preference_kind AS ENUM ('artist', 'venue', 'sound', 'freeform');
-
--- Poll cadence class for the availability tier.
+CREATE TYPE drop_state AS ENUM ('NOTIFIED', 'SKIPPED', 'FAILED');
+CREATE TYPE change_kind AS ENUM ('new_ticketed', 'tier_available', 'returned_to_sale');
+CREATE TYPE preference_kind AS ENUM ('artist', 'venue');
 CREATE TYPE watch_tier AS ENUM ('hot', 'warm', 'cold');
-
+CREATE TYPE user_role AS ENUM ('user', 'operator');
+CREATE TYPE notification_channel_kind AS ENUM ('email');
+CREATE TYPE delivery_status AS ENUM ('pending', 'sending', 'sent', 'failed', 'suppressed');
+CREATE TYPE subscription_origin AS ENUM ('explicit', 'scout');
 
 CREATE OR REPLACE FUNCTION touch_updated_at() RETURNS trigger AS $$
 BEGIN
@@ -41,17 +16,15 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-
--- ---------------------------------------------------------------- catalogue
-
+-- Catalogue: Go is the only normal writer. `raw` preserves upstream fields
+-- when RA changes its undocumented GraphQL schema.
 CREATE TABLE venues (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    source          source_platform NOT NULL,
-    source_venue_id text            NOT NULL,
-    name            text            NOT NULL,
+    source          text NOT NULL DEFAULT 'ra' CHECK (source = 'ra'),
+    source_venue_id text NOT NULL,
+    name            text NOT NULL,
     area_id         integer,
     area_name       text,
-    capacity        integer,
     latitude        double precision,
     longitude       double precision,
     content_url     text,
@@ -61,117 +34,57 @@ CREATE TABLE venues (
 );
 
 CREATE TABLE artists (
-    id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    source             source_platform NOT NULL,
-    source_artist_id   text            NOT NULL,
-    name               text            NOT NULL,
-    slug               text,
-    followers          integer,
-    -- Semantic embedding of the artist's bio/genre text.
-    semantic_embedding vector(1024),
-    -- Numeric audio fingerprint: bpm band, key as sin/cos, energy,
-    -- danceability, valence, acousticness, ... See docs in ARCHITECTURE.md §6.
-    sound_signature    vector(12),
-    created_at         timestamptz NOT NULL DEFAULT now(),
-    updated_at         timestamptz NOT NULL DEFAULT now(),
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    source           text NOT NULL DEFAULT 'ra' CHECK (source = 'ra'),
+    source_artist_id text NOT NULL,
+    name             text NOT NULL,
+    slug             text,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now(),
     UNIQUE (source, source_artist_id)
 );
 
 CREATE TABLE events (
-    id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    source             source_platform NOT NULL,
-    source_event_id    text            NOT NULL,
-    title              text            NOT NULL,
-    content_url        text,
-    venue_id           uuid REFERENCES venues (id) ON DELETE SET NULL,
-    starts_at          timestamptz,
-    ends_at            timestamptz,
-    listing_date       date,
-    is_ticketed        boolean NOT NULL DEFAULT false,
-    -- RA flags events sitting behind a Queue-it waiting room. Such events are
-    -- forced to alert-only regardless of RESERVATION_MODE.
-    queue_it_enabled   boolean NOT NULL DEFAULT false,
-    attending          integer,
-    cost               text,
-    minimum_age        integer,
-    genres             text[],
-    flyer_url          text,
-    -- Outbound link to whichever vendor actually sells the ticket. EDMTrain is
-    -- a listings site, so this is often the only way to reach a sale page.
-    -- EDMTrain's ToS requires displaying its event link unmodified.
-    ticket_link        text,
-    -- When the show became publicly known (EDMTrain createdDate). Distinct from
-    -- first_seen_at, which is when *we* first saw it.
-    announced_at       timestamptz,
-    semantic_embedding vector(1024),
-    -- Unparsed source payload, so an upstream schema change is a backfill
-    -- rather than permanent data loss.
-    raw                jsonb,
-    first_seen_at      timestamptz NOT NULL DEFAULT now(),
-    last_seen_at       timestamptz NOT NULL DEFAULT now(),
-    created_at         timestamptz NOT NULL DEFAULT now(),
-    updated_at         timestamptz NOT NULL DEFAULT now(),
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    source           text NOT NULL DEFAULT 'ra' CHECK (source = 'ra'),
+    source_event_id  text NOT NULL,
+    title            text NOT NULL,
+    content_url      text,
+    ticket_link      text,
+    venue_id         uuid REFERENCES venues (id) ON DELETE SET NULL,
+    starts_at        timestamptz,
+    ends_at          timestamptz,
+    listing_date     date,
+    is_ticketed      boolean NOT NULL DEFAULT false,
+    queue_it_enabled boolean NOT NULL DEFAULT false,
+    attending        integer,
+    minimum_age      integer,
+    genres           text[],
+    raw              jsonb,
+    first_seen_at    timestamptz NOT NULL DEFAULT now(),
+    last_seen_at     timestamptz NOT NULL DEFAULT now(),
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now(),
     UNIQUE (source, source_event_id)
 );
 
--- Entity resolution across sources. The same show is a separate row per
--- platform because each has its own id, fields, and refresh cadence; merging
--- on ingest would mean destructively guessing. Instead every duplicate points
--- at one elected canonical row, so a bad match is one UPDATE to undo.
--- Matching is fuzzy (normalized title + date + venue proximity) and therefore
--- carries a confidence score for review in the admin panel.
-CREATE TABLE event_links (
-    event_id           uuid NOT NULL REFERENCES events (id) ON DELETE CASCADE,
-    canonical_event_id uuid NOT NULL REFERENCES events (id) ON DELETE CASCADE,
-    match_confidence   real,
-    match_method       text,
-    confirmed          boolean NOT NULL DEFAULT false,
-    created_at         timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (event_id),
-    CHECK (event_id <> canonical_event_id)
-);
-
-CREATE INDEX event_links_canonical_idx ON event_links (canonical_event_id);
-
 CREATE TABLE event_artists (
-    event_id      uuid NOT NULL REFERENCES events (id)  ON DELETE CASCADE,
-    artist_id     uuid NOT NULL REFERENCES artists (id) ON DELETE CASCADE,
-    billing       smallint,
-    -- EDMTrain marks an artist as performing back-to-back with the next artist
-    -- in the lineup. A b2b set is a stronger hype signal than either name alone.
-    b2b_with_next boolean NOT NULL DEFAULT false,
+    event_id  uuid NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+    artist_id uuid NOT NULL REFERENCES artists (id) ON DELETE CASCADE,
+    billing   smallint,
     PRIMARY KEY (event_id, artist_id)
 );
 
-
--- ------------------------------------------------------------- ingest state
-
--- How far each adapter has consumed. This is a performance optimization, not
--- a correctness mechanism: dedupe is enforced by UNIQUE (source,
--- source_event_id) on events, so re-fetching an overlapping window is free.
--- That property is what lets the poller use a generous safety overlap without
--- risking duplicate announcements.
 CREATE TABLE ingest_watermarks (
-    source     source_platform PRIMARY KEY,
+    source     text PRIMARY KEY CHECK (source = 'ra'),
     cursor_at  timestamptz NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-
--- ------------------------------------------------------------ availability
-
--- Ingestion is two-tier. The discovery tier (EDMTrain, ~60 s) answers "what
--- shows exist"; the availability tier (RA, ~2 s) answers "did the sale state
--- change". Polling every known event at 2 s would blow through every rate
--- limit we have, so only watchlisted events get the fast loop, and hype score
--- decides what earns a slot.
+-- One shared polling row per RA event, independent of subscriber count.
 CREATE TABLE watchlist (
     event_id       uuid PRIMARY KEY REFERENCES events (id) ON DELETE CASCADE,
-    tier           watch_tier NOT NULL DEFAULT 'warm',
-    -- Which adapter polls availability. May differ from the source that
-    -- discovered the event: EDMTrain finds it, RA watches it.
-    watch_source   source_platform NOT NULL,
-    watch_url      text,
+    tier           watch_tier NOT NULL DEFAULT 'hot',
     reason         text,
     active         boolean NOT NULL DEFAULT true,
     last_polled_at timestamptz,
@@ -179,19 +92,13 @@ CREATE TABLE watchlist (
     updated_at     timestamptz NOT NULL DEFAULT now()
 );
 
--- Scheduler query: least-recently-polled first, terminal rows excluded.
 CREATE INDEX watchlist_due_idx ON watchlist (tier, last_polled_at NULLS FIRST)
     WHERE active;
 
--- Coarse per-event availability observations, written only when the
--- fingerprint changes. This exists because RA returns Event.tickets as an empty
--- array to unauthenticated clients (ARCHITECTURE.md §1.2), so for RA there are
--- no tiers to record — only the event-level signals below. Writing a row per
--- poll instead of per change would mean ~30 rows/minute/event of identical data.
 CREATE TABLE event_snapshots (
     id               bigserial PRIMARY KEY,
     event_id         uuid NOT NULL REFERENCES events (id) ON DELETE CASCADE,
-    fingerprint      text    NOT NULL,
+    fingerprint      text NOT NULL,
     is_ticketed      boolean NOT NULL DEFAULT false,
     cost             text,
     presale_status   text,
@@ -208,32 +115,23 @@ CREATE TABLE event_snapshots (
 CREATE INDEX event_snapshots_event_observed_idx
     ON event_snapshots (event_id, observed_at DESC);
 
--- ---------------------------------------------------------------- FSM state
-
+-- A NULL state is in-flight. Only terminal outcomes are part of the state
+-- vocabulary; the old browser/scoring graph no longer exists.
 CREATE TABLE drops (
-    id               uuid PRIMARY KEY,          -- uuid v7 minted by the Go ingester
-    event_id         uuid NOT NULL REFERENCES events (id) ON DELETE CASCADE,
-    change           change_kind NOT NULL,
-    fingerprint      text        NOT NULL,
-    state            drop_state  NOT NULL DEFAULT 'INGESTED',
-    hype_score       numeric(4, 3) CHECK (hype_score >= 0 AND hype_score <= 1),
-    attempt_count    smallint    NOT NULL DEFAULT 0,
-    reservation_url  text,
-    error            text,
-    detected_at      timestamptz NOT NULL,
-    state_entered_at timestamptz NOT NULL DEFAULT now(),
-    notified_at      timestamptz,
-    created_at       timestamptz NOT NULL DEFAULT now(),
-    updated_at       timestamptz NOT NULL DEFAULT now()
+    id          uuid PRIMARY KEY,
+    event_id    uuid NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+    change      change_kind NOT NULL,
+    fingerprint text NOT NULL,
+    state       drop_state,
+    detected_at timestamptz NOT NULL,
+    error       text,
+    notified_at timestamptz,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
 );
 
--- Dedupe guard: the same availability state for the same event is one drop,
--- however many times the poll loop sees it.
 CREATE UNIQUE INDEX drops_event_fingerprint_key ON drops (event_id, fingerprint);
-
--- Supports "what is still in flight" without scanning terminal rows.
-CREATE INDEX drops_active_idx ON drops (state, state_entered_at)
-    WHERE state NOT IN ('NOTIFIED', 'SKIPPED', 'FAILED');
+CREATE INDEX drops_inflight_idx ON drops (created_at) WHERE state IS NULL;
 
 CREATE TABLE drop_transitions (
     id         bigserial PRIMARY KEY,
@@ -241,77 +139,147 @@ CREATE TABLE drop_transitions (
     from_state drop_state,
     to_state   drop_state NOT NULL,
     latency_ms integer,
-    detail     jsonb,
+    detail     jsonb NOT NULL DEFAULT '{}'::jsonb,
     at         timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX drop_transitions_drop_idx ON drop_transitions (drop_id, at);
 
-
--- -------------------------------------------------------------- preferences
-
-CREATE TABLE user_preferences (
+-- Auth.js adapter tables retain its expected quoted column names.
+CREATE TABLE users (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    label           text NOT NULL,
-    kind            preference_kind NOT NULL,
-    embedding       vector(1024),
-    sound_signature vector(12),
-    weight          real NOT NULL DEFAULT 1.0 CHECK (weight >= 0),
-    active          boolean NOT NULL DEFAULT true,
+    name            text,
+    email           text UNIQUE,
+    "emailVerified" timestamptz,
+    image           text,
+    role            user_role NOT NULL DEFAULT 'user',
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
 
-
--- ---------------------------------------------------------- self-healing
-
--- Durable mirror of selector_overrides:<domain> in Redis. Redis is the hot
--- cache; this survives a flush and carries the provenance needed to audit a
--- selector that an LLM inferred.
-CREATE TABLE selector_overrides (
-    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    domain       text NOT NULL,
-    logical_name text NOT NULL,
-    selector     text NOT NULL,
-    confidence   real,
-    model        text,
-    healed_from  text,
-    verified_at  timestamptz,
-    created_at   timestamptz NOT NULL DEFAULT now(),
-    updated_at   timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (domain, logical_name)
+CREATE TABLE accounts (
+    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "userId"            uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    type                text NOT NULL,
+    provider            text NOT NULL,
+    "providerAccountId" text NOT NULL,
+    refresh_token       text,
+    access_token        text,
+    expires_at          bigint,
+    token_type          text,
+    scope               text,
+    id_token            text,
+    session_state       text,
+    UNIQUE (provider, "providerAccountId")
 );
 
+CREATE TABLE sessions (
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "sessionToken" text NOT NULL UNIQUE,
+    "userId"       uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    expires        timestamptz NOT NULL
+);
 
--- ------------------------------------------------------------- ANN indexes
+CREATE TABLE verification_token (
+    identifier text NOT NULL,
+    token      text NOT NULL,
+    expires    timestamptz NOT NULL,
+    PRIMARY KEY (identifier, token)
+);
 
--- HNSW rather than IVFFlat: IVFFlat must be trained on a populated table and
--- degrades as the corpus outgrows its centroids. The preference set is edited
--- live from the admin panel, so incremental index maintenance matters more
--- than build time.
-CREATE INDEX artists_semantic_hnsw ON artists
-    USING hnsw (semantic_embedding vector_cosine_ops);
-CREATE INDEX artists_sound_hnsw ON artists
-    USING hnsw (sound_signature vector_cosine_ops);
-CREATE INDEX events_semantic_hnsw ON events
-    USING hnsw (semantic_embedding vector_cosine_ops);
-CREATE INDEX user_preferences_embedding_hnsw ON user_preferences
-    USING hnsw (embedding vector_cosine_ops);
+CREATE TABLE user_settings (
+    user_id      uuid PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+    ra_area_id   integer,
+    ra_area_name text,
+    demo_mode    boolean NOT NULL DEFAULT false,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
 
+CREATE TABLE user_preferences (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    label      text NOT NULL CHECK (btrim(label) <> ''),
+    kind       preference_kind NOT NULL,
+    active     boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
 
--- ---------------------------------------------------------------- triggers
+CREATE UNIQUE INDEX user_preferences_identity_key
+    ON user_preferences (user_id, kind, lower(label));
+CREATE INDEX user_preferences_user_idx
+    ON user_preferences (user_id, active, kind);
 
-CREATE TRIGGER venues_touch  BEFORE UPDATE ON venues
+CREATE TABLE event_subscriptions (
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id       uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    event_id      uuid NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+    active        boolean NOT NULL DEFAULT true,
+    origin        subscription_origin NOT NULL,
+    user_disabled boolean NOT NULL DEFAULT false,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (user_id, event_id)
+);
+
+CREATE INDEX event_subscriptions_active_event_idx
+    ON event_subscriptions (event_id, user_id) WHERE active;
+CREATE INDEX event_subscriptions_active_user_idx
+    ON event_subscriptions (user_id, event_id) WHERE active;
+
+CREATE TABLE notification_channels (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    kind        notification_channel_kind NOT NULL DEFAULT 'email',
+    destination text NOT NULL,
+    verified_at timestamptz,
+    active      boolean NOT NULL DEFAULT true,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (user_id, kind, destination)
+);
+
+CREATE TABLE notification_deliveries (
+    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    drop_id             uuid NOT NULL REFERENCES drops (id) ON DELETE CASCADE,
+    user_id             uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    channel_id          uuid NOT NULL REFERENCES notification_channels (id) ON DELETE CASCADE,
+    channel             notification_channel_kind NOT NULL,
+    status              delivery_status NOT NULL DEFAULT 'pending',
+    attempts            smallint NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    provider_message_id text,
+    last_error          text,
+    next_attempt_at     timestamptz,
+    sent_at             timestamptz,
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (drop_id, user_id, channel)
+);
+
+CREATE INDEX notification_deliveries_due_idx
+    ON notification_deliveries (next_attempt_at, created_at)
+    WHERE status IN ('pending', 'failed');
+
+CREATE TRIGGER venues_touch BEFORE UPDATE ON venues
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER artists_touch BEFORE UPDATE ON artists
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-CREATE TRIGGER events_touch  BEFORE UPDATE ON events
-    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-CREATE TRIGGER drops_touch   BEFORE UPDATE ON drops
+CREATE TRIGGER events_touch BEFORE UPDATE ON events
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER watchlist_touch BEFORE UPDATE ON watchlist
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER drops_touch BEFORE UPDATE ON drops
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER users_touch BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER user_settings_touch BEFORE UPDATE ON user_settings
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER user_preferences_touch BEFORE UPDATE ON user_preferences
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-CREATE TRIGGER selector_overrides_touch BEFORE UPDATE ON selector_overrides
+CREATE TRIGGER event_subscriptions_touch BEFORE UPDATE ON event_subscriptions
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER notification_channels_touch BEFORE UPDATE ON notification_channels
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER notification_deliveries_touch BEFORE UPDATE ON notification_deliveries
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();

@@ -1,7 +1,7 @@
 // Command ingest runs the TicketDrop ingestion service.
 //
-// EDMTrain discovery, RA enumeration and availability polling, and cross-source
-// resolution run as independently supervised loops.
+// RA catalogue enumeration and availability polling run as independently
+// supervised loops.
 package main
 
 import (
@@ -22,7 +22,6 @@ import (
 	"ticketdrop/ingest/internal/pipeline"
 	"ticketdrop/ingest/internal/pool"
 	"ticketdrop/ingest/internal/source"
-	"ticketdrop/ingest/internal/source/edmtrain"
 	"ticketdrop/ingest/internal/source/ra"
 	"ticketdrop/ingest/internal/store"
 	"ticketdrop/ingest/internal/stream"
@@ -70,32 +69,16 @@ func run() error {
 	}
 	defer snapshots.Close()
 
-	srv := startAdminServer(cfg.MetricsAddr, log)
+	srv := startAdminServer(cfg.MetricsAddr, log, func(ctx context.Context) error {
+		if err := st.Ping(ctx); err != nil {
+			return err
+		}
+		return pub.Ping(ctx)
+	})
 	defer shutdown(srv, log)
 
-	// Each loop runs independently. One tier being disabled or failing must not
-	// take the other down: discovery and availability answer different
-	// questions and have no runtime dependency on each other.
 	group, gctx := errgroup.WithContext(ctx)
 	var started int
-
-	if cfg.EDMTrain.Enabled() {
-		if len(cfg.EDMTrain.LocationIDs) == 0 {
-			log.Warn("EDMTRAIN_LOCATION_IDS is empty; the API will return every upcoming event, " +
-				"which is slow and wasteful. Look up ids via the Locations API.")
-		}
-		client := edmtrain.NewClient(cfg.EDMTrain.BaseURL, cfg.EDMTrain.APIKey, cfg.EDMTrain.RequestTimeout)
-		adapter := edmtrain.NewAdapter(client, cfg.EDMTrain.LocationIDs, cfg.EDMTrain.IncludeLivestreams)
-		discovery := pipeline.NewDiscovery(adapter, st, pub, log,
-			cfg.EDMTrain.PollInterval, cfg.EDMTrain.Lookback)
-
-		group.Go(func() error { return discovery.Run(gctx) })
-		started++
-	} else {
-		// A missing credential disables discovery rather than preventing the RA
-		// availability tier from running.
-		log.Warn("EDMTRAIN_API_KEY not set, discovery tier disabled")
-	}
 
 	if cfg.RA.Enabled() {
 		raClient := ra.NewClient(cfg.RA.Endpoint, cfg.RA.UserAgent, cfg.RA.RequestTimeout)
@@ -120,16 +103,8 @@ func run() error {
 		log.Warn("RA_AREAS not set, availability tier disabled")
 	}
 
-	// Linking only means something when both catalogues are being filled.
-	if cfg.EDMTrain.Enabled() && cfg.RA.Enabled() {
-		resolver := pipeline.NewResolver(st, log,
-			source.PlatformEDMTrain, source.PlatformRA,
-			cfg.RA.ResolveInterval, cfg.RA.ResolveBatchSize)
-		group.Go(func() error { return resolver.Run(gctx) })
-	}
-
 	if started == 0 {
-		log.Error("no ingestion tier is configured; set EDMTRAIN_API_KEY or RA_AREAS")
+		log.Error("ingestion is not configured; set RA_AREAS")
 		<-ctx.Done()
 		return nil
 	}
@@ -150,7 +125,7 @@ func seedWatchlist(ctx context.Context, st *store.Store, log *slog.Logger, limit
 		log.Warn("dev watchlist seed failed", "err", err)
 		return nil
 	}
-	log.Warn("dev watchlist seed applied; production promotion is the harness's job",
+	log.Warn("dev watchlist seed applied; production subscriptions come from the harness",
 		"events_added", n)
 	return nil
 }
@@ -159,12 +134,26 @@ func seedWatchlist(ctx context.Context, st *store.Store, log *slog.Logger, limit
 // Fiber. The service has no API surface, and promhttp is already a net/http
 // handler, so a framework would add a dependency and an adapter for two
 // endpoints.
-func startAdminServer(addr string, log *slog.Logger) *http.Server {
+func startAdminServer(
+	addr string,
+	log *slog.Logger,
+	ready func(context.Context) error,
+) *http.Server {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := ready(ctx); err != nil {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
 	})
 
 	srv := &http.Server{

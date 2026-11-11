@@ -193,8 +193,8 @@ type APIGenre struct {
 }
 
 // Listings enumerates events in an area over a date window. This is how we
-// learn RA event ids at all; it is not the discovery tier, which is EDMTrain's
-// job. Without enumeration there is nothing for the availability loop to poll.
+// learn RA event ids at all. Without enumeration there is nothing for the
+// availability loop to poll.
 func (c *Client) Listings(ctx context.Context, areaID string, from, to time.Time, pageSize, page int) ([]APIEvent, int, error) {
 	vars := map[string]any{
 		"filters": map[string]any{

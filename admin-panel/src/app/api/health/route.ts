@@ -1,6 +1,7 @@
 import { query } from "@/lib/db";
-import { CONSUMER_GROUP, redis, STREAM_DROPS, STREAM_RESULTS } from "@/lib/redis";
+import { CONSUMER_GROUP, redis, STREAM_DROPS } from "@/lib/redis";
 import type { Health } from "@/lib/types";
+import { requireOperator } from "@/lib/access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,6 +9,8 @@ export const dynamic = "force-dynamic";
 type GroupInfo = { name: string; consumers: number; pending: number; lag: number | null };
 
 export async function GET() {
+  const access = await requireOperator();
+  if (access.response) return access.response;
   const health: Health = {
     redis: false,
     postgres: false,
@@ -16,8 +19,6 @@ export async function GET() {
     pending: null,
     consumers: 0,
     counts: {},
-    soundScoringAvailable: false,
-    activePreferences: 0,
   };
 
   // Redis and Postgres are probed independently so one being down still renders
@@ -25,7 +26,7 @@ export async function GET() {
   // an incident is a panel you cannot use during an incident.
   try {
     const r = redis();
-    for (const name of [STREAM_DROPS, STREAM_RESULTS]) {
+    for (const name of [STREAM_DROPS]) {
       health.streams.push({ name, length: await r.xlen(name) });
     }
 
@@ -50,23 +51,16 @@ export async function GET() {
       failed: string;
       in_flight: string;
       watchlist: string;
-      pending_links: string;
-      prefs: string;
-      sound_ready: boolean;
+      deliveries_failed: string;
     }>(`
       SELECT
         (SELECT count(*) FROM drops WHERE state = 'NOTIFIED')               AS notified,
         (SELECT count(*) FROM drops WHERE state = 'SKIPPED')                AS skipped,
         (SELECT count(*) FROM drops WHERE state = 'FAILED')                 AS failed,
-        (SELECT count(*) FROM drops
-          WHERE state NOT IN ('NOTIFIED','SKIPPED','FAILED'))               AS in_flight,
+        (SELECT count(*) FROM drops WHERE state IS NULL)                    AS in_flight,
         (SELECT count(*) FROM watchlist WHERE active)                       AS watchlist,
-        (SELECT count(*) FROM event_links WHERE NOT confirmed)              AS pending_links,
-        (SELECT count(*) FROM user_preferences WHERE active)                AS prefs,
-        (SELECT EXISTS (SELECT 1 FROM artists WHERE sound_signature IS NOT NULL)
-            AND EXISTS (SELECT 1 FROM user_preferences
-                        WHERE active AND kind = 'sound'::preference_kind
-                          AND sound_signature IS NOT NULL))                 AS sound_ready
+        (SELECT count(*) FROM notification_deliveries
+          WHERE status = 'failed')                                         AS deliveries_failed
     `);
 
     health.counts = {
@@ -75,10 +69,8 @@ export async function GET() {
       failed: Number(row.failed),
       inFlight: Number(row.in_flight),
       watchlist: Number(row.watchlist),
-      pendingLinks: Number(row.pending_links),
+      deliveriesFailed: Number(row.deliveries_failed),
     };
-    health.activePreferences = Number(row.prefs);
-    health.soundScoringAvailable = row.sound_ready;
     health.postgres = true;
   } catch {
     health.postgres = false;

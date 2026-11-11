@@ -28,8 +28,7 @@ func NewAdapter(client *Client, areaIDs []string, lookahead time.Duration) *Adap
 	return &Adapter{client: client, areaIDs: areaIDs, lookahead: lookahead}
 }
 
-func (a *Adapter) Name() string      { return source.PlatformRA }
-func (a *Adapter) Tier() source.Tier { return source.TierAvailability }
+func (a *Adapter) Name() string { return source.PlatformRA }
 
 // Enumerate lists events across the configured areas so their ids exist locally
 // for the watchlist to reference. It emits no stream messages: appearing in a
@@ -107,6 +106,9 @@ func (a *Adapter) toEvent(e APIEvent) source.Event {
 		}
 		if e.Venue.Area != nil {
 			v.AreaName = e.Venue.Area.Name
+			if areaID, err := strconv.Atoi(e.Venue.Area.ID); err == nil {
+				v.AreaID = &areaID
+			}
 		}
 		ev.Venue = v
 	}

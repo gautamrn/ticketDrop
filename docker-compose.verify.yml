@@ -1,0 +1,138 @@
+name: ticketdrop-verify
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ticketdrop
+      POSTGRES_PASSWORD: ticketdrop
+      POSTGRES_DB: ticketdrop
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # The official image runs a temporary postmaster while applying init
+      # scripts. Requiring PID 1 to be postgres avoids marking that transient
+      # server healthy just before the entrypoint restarts it.
+      test:
+        [
+          "CMD-SHELL",
+          "test \"$$(cat /proc/1/comm)\" = postgres && pg_isready -U ticketdrop -d ticketdrop",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "no", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  mock-ra:
+    build:
+      context: ./ingest-service
+      target: build
+    working_dir: /src
+    command: ["/out/mock-ra", "-addr", ":8098"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-qO-",
+          "--post-data={\"query\":\"{__typename}\"}",
+          "--header=Content-Type: application/json",
+          "http://localhost:8098/graphql",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  ingest:
+    build: ./ingest-service
+    environment:
+      DATABASE_URL: postgres://ticketdrop:ticketdrop@postgres:5432/ticketdrop?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      RA_GRAPHQL_URL: http://mock-ra:8098/graphql
+      RA_USER_AGENT: TicketDrop-Integration-Smoke/1.0
+      RA_AREAS: "19"
+      RA_ENUMERATE_INTERVAL_MS: "1000"
+      POLL_INTERVAL_MS: "500"
+      POLL_TIMEOUT_MS: "2000"
+      RA_BATCH_SIZE: "10"
+      RA_WORKERS: "2"
+      RA_QUEUE_SIZE: "20"
+      INGEST_METRICS_ADDR: :2112
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      mock-ra: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:2112/readyz"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  harness:
+    build: ./agent-harness
+    environment:
+      DATABASE_URL: postgres://ticketdrop:ticketdrop@postgres:5432/ticketdrop?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      SUBSCRIPTION_RECONCILE_INTERVAL_MS: "5000"
+      SUBSCRIPTION_RECONCILE_TIMEOUT_MS: "5000"
+      SCOUT_INTERVAL_MS: "5000"
+      SCOUT_TIMEOUT_MS: "5000"
+      HARNESS_HEALTH_PORT: "2113"
+      APP_BASE_URL: http://panel.invalid
+      UNSUBSCRIBE_SECRET: integration-only
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      ingest: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:2113/readyz', timeout=2)",
+        ]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  verify:
+    build: ./agent-harness
+    entrypoint: ["python", "/verify/product_smoke.py"]
+    environment:
+      DATABASE_URL: postgres://ticketdrop:ticketdrop@postgres:5432/ticketdrop?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      MOCK_RA_URL: http://mock-ra:8098
+    volumes:
+      - ./scripts/product_smoke.py:/verify/product_smoke.py:ro
+    depends_on:
+      harness: { condition: service_healthy }
+
+  benchmark:
+    profiles: ["benchmark"]
+    build: ./agent-harness
+    entrypoint:
+      [
+        "python",
+        "/verify/load_test.py",
+        "--count",
+        "100",
+        "--output",
+        "/output/performance.md",
+      ]
+    environment:
+      DATABASE_URL: postgres://ticketdrop:ticketdrop@postgres:5432/ticketdrop?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./scripts/load_test.py:/verify/load_test.py:ro
+      - ./docs:/output
+    depends_on:
+      harness: { condition: service_healthy }

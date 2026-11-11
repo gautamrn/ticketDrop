@@ -46,7 +46,7 @@ func NewAvailability(
 		cache:     c,
 		publisher: pub,
 		pool:      p,
-		log:       log.With("source", adapter.Name(), "tier", string(adapter.Tier())),
+		log:       log.With("source", adapter.Name()),
 		interval:  interval,
 		batchSize: batchSize,
 	}
@@ -221,6 +221,13 @@ func raStatus(err error) string {
 	default:
 		return "error"
 	}
+}
+
+func statusOf(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "ok"
 }
 
 // Enumerator periodically lists events in the configured areas so their ids

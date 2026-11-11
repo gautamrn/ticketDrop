@@ -1,140 +1,116 @@
 # ingest-service
 
-Go service that polls ticketing sources and appends drop messages to the Redis
-Stream. It is the only writer to `ticket:drops`.
+Go 1.25 service that enumerates Resident Advisor events, polls the shared
+watchlist, classifies observable sale-state changes, and publishes them to
+Redis Stream `ticket:drops`. It is the only process that calls RA and the only
+writer to that stream.
 
-Two independent tiers run in one process, supervised by an `errgroup` so that one
-tier failing or being unconfigured does not take the other down:
+## Runtime loops
 
-| Tier | Source | Cadence | Emits |
-| --- | --- | --- | --- |
-| Discovery | EDMTrain | ~60 s | `announced` |
-| Availability | RA | ~2 s, watchlisted events only | `new_ticketed`, `tier_available`, `returned_to_sale` |
+- **Enumeration** reads upcoming events for `RA_AREAS` on
+  `RA_ENUMERATE_INTERVAL_MS` (default 15 minutes), upserts catalogue rows, and
+  emits nothing.
+- **Availability** reads active `watchlist` rows and polls them on
+  `POLL_INTERVAL_MS` (default 5 seconds) through a bounded worker pool.
 
-RA additionally runs a slow **enumerate** loop (~15 min) that exists only to
-learn RA event ids so the watchlist can reference them. It emits nothing:
-appearing in a listing is not a sale-state change, and treating it as one would
-alert on every event in a city on first run.
+Enumeration is intentionally silent: a new catalogue listing is not evidence
+that a sale state changed.
+
+## Observable RA signal
+
+Unauthenticated `Event.tickets` is empty for sampled `LEGACY` events, so this
+service does not claim inventory or per-tier visibility. Its fingerprint covers
+`isTicketed`, normalized `cost`, `presaleStatus`, `resaleActive`,
+`queueItEnabled`, event `status`, and `dateUpdated`.
+
+It publishes only:
+
+- `presaleStatus` null → `ACTIVE` as `tier_available`;
+- `isTicketed` false → true as `new_ticketed`;
+- `resaleActive` false → true as `returned_to_sale`;
+- normalized `cost` changing while ticketed as `tier_available`.
+
+`dateUpdated` alone never classifies a change. `attending` and
+`interestedCount` are excluded from the fingerprint. The first observation
+writes `snap:ra:<event_id>` and a durable snapshot without publishing, which
+prevents cold starts from alerting on every event.
 
 ## Layout
 
-```
-cmd/ingest/            service entrypoint
-cmd/mock-edmtrain/     stand-in API for running without a real key
-cmd/mock-ra/           stand-in RA GraphQL, with admin hooks to trigger drops
-internal/config/       environment loading and validation
-internal/source/       normalized Event + Snapshot models, adapter contracts
-internal/source/edmtrain/  EDMTrain client and adapter (discovery)
-internal/source/ra/    RA GraphQL client and adapter (availability)
-internal/fingerprint/  snapshot hashing and change classification
-internal/resolve/      cross-source event matching (EDMTrain <-> RA)
-internal/pool/         bounded worker pool for the fast loop
-internal/cache/        Redis prior-snapshot store
-internal/store/        Postgres: upserts, dedupe, watermark, watchlist
-internal/stream/       Redis Stream publisher
-internal/pipeline/     the discovery, enumerate, availability, and resolve loops
-internal/metrics/      Prometheus instrumentation
+```text
+cmd/ingest/             composition root and health/metrics server
+cmd/mock-ra/            local GraphQL contract and mutation hooks
+internal/config/        environment loading and validation
+internal/source/ra/     RA client and adapter
+internal/fingerprint/   stable hash and change classification
+internal/pipeline/      enumeration and availability loops
+internal/pool/          bounded polling workers
+internal/cache/         Redis prior-snapshot storage
+internal/store/         Postgres catalogue, snapshots, and watch reads
+internal/stream/        Redis publisher
+internal/metrics/       Prometheus instruments
 ```
 
-## What RA can and cannot tell us
+## Run locally
 
-`Event.tickets` exists in RA's schema and carries exactly the fields a per-tier
-detector would want, but it **returns an empty array to unauthenticated
-clients** — verified across twelve events in three cities, with no GraphQL
-error. Detection is therefore event-level, keyed on `isTicketed`, `cost`,
-`presaleStatus`, `resaleActive`, and `status`. ARCHITECTURE.md §1.2 has the
-evidence and the resulting fingerprint definition.
-
-The practical consequence: ingestion detects that *something changed*, cheaply.
-It does not know what is actually buyable. Resolving that is the browser stage's
-job, and only for events that clear the hype threshold.
-
-## Run against the mock
-
-No API key needed. From the repo root, with `docker compose up -d` already
-running:
+Start Postgres and Redis from the repository root, then run the mock:
 
 ```powershell
-cd ingest-service
-go run ./cmd/mock-edmtrain -addr :8099
-```
-
-In a second terminal:
-
-```powershell
-cd ingest-service
-$env:EDMTRAIN_API_KEY="mock-key"
-$env:EDMTRAIN_BASE_URL="http://localhost:8099/api"
-$env:EDMTRAIN_POLL_INTERVAL_MS="10000"
-go run ./cmd/ingest
-```
-
-The first poll announces every seeded event; later polls announce nothing,
-because dedupe is enforced by `UNIQUE (source, source_event_id)`. To watch a
-single new announcement flow through:
-
-```powershell
-Invoke-WebRequest -Uri http://localhost:8099/admin/add -Method POST
-```
-
-Inspect the results:
-
-```powershell
-docker compose exec redis redis-cli XRANGE ticket:drops - + COUNT 5
-docker compose exec postgres psql -U ticketdrop -d ticketdrop -c "SELECT source_event_id, title FROM events;"
-```
-
-## Run the availability tier against the mock
-
-`cmd/mock-ra` serves the two operations the adapter sends and exposes admin hooks
-that mutate an event the way a real drop would, so the fast loop can be exercised
-without polling ra.co every two seconds.
-
-```powershell
+docker compose up -d
 cd ingest-service
 go run ./cmd/mock-ra -addr :8098
 ```
 
-In a second terminal:
+In another terminal:
 
 ```powershell
 cd ingest-service
 $env:RA_GRAPHQL_URL="http://localhost:8098/graphql"
 $env:RA_AREAS="19"
-$env:RA_DEV_SEED_WATCHLIST="5"   # dev only; the harness promotes by hype score
-$env:EDMTRAIN_API_KEY=""          # discovery tier off for this run
+$env:RA_DEV_SEED_WATCHLIST="3"
 go run ./cmd/ingest
 ```
 
-Wait for `enumerate complete` and the watchlist seed, then trigger transitions:
+Wait for enumeration and the silent baseline, then mutate a mock event:
 
 ```powershell
-curl.exe -X POST "localhost:8098/admin/presale?id=90001"   # -> tier_available
-curl.exe -X POST "localhost:8098/admin/resale?id=90003"    # -> returned_to_sale
-curl.exe -X POST "localhost:8098/admin/flyer?id=90002"     # -> nothing, by design
+curl.exe -X POST "http://localhost:8098/admin/presale?id=90001"
+curl.exe -X POST "http://localhost:8098/admin/resale?id=90003"
+curl.exe -X POST "http://localhost:8098/admin/flyer?id=90002"
 ```
 
-The third one is the important case. It bumps only `dateUpdated`, so the
-fingerprint moves but no rule classifies it. The change is written to
-`event_snapshots` and no message is published, because alerting on flyer swaps is
-how you train someone to ignore alerts.
+The flyer mutation changes `dateUpdated` but is not published. Inspect the
+stream and durable observations:
 
-The first poll of any event establishes a baseline and emits nothing. Without
-that rule every watchlisted event would look like a fresh drop on startup.
-
-## Run against the real API
-
-Set `EDMTRAIN_API_KEY` in `.env` and leave `EDMTRAIN_BASE_URL` at its default.
-`EDMTRAIN_LOCATION_IDS` should be numeric ids from their Locations API:
-
-```
-GET https://edmtrain.com/api/locations?state=Michigan&city=Detroit&client=<key>
+```powershell
+docker compose exec redis redis-cli XRANGE ticket:drops - + COUNT 5
+docker compose exec postgres psql -U ticketdrop -d ticketdrop -c "SELECT fingerprint, observed_at FROM event_snapshots ORDER BY observed_at DESC LIMIT 5;"
 ```
 
-Leaving it empty makes the API return every upcoming event, which is slow and
-wasteful; the service warns at startup if so.
+`RA_DEV_SEED_WATCHLIST` is a development helper. In normal operation, the
+Python subscription reconciler owns `watchlist`.
 
-## Tests and checks
+## Configuration and endpoints
+
+- `DATABASE_URL` is required.
+- `REDIS_URL` defaults to `redis://localhost:6379/0`.
+- `REDIS_STREAM` defaults to `ticket:drops`.
+- `RA_GRAPHQL_URL` defaults to `https://ra.co/graphql`.
+- `RA_AREAS` enables ingestion and limits enumeration.
+- `POLL_INTERVAL_MS` defaults to 5000 and must be at least 500.
+- `POLL_TIMEOUT_MS` defaults to 4000.
+- `RA_WORKERS`, `RA_QUEUE_SIZE`, and `RA_BATCH_SIZE` bound concurrency.
+- `RA_ENUMERATE_INTERVAL_MS` defaults to 900000.
+
+The service exposes `/metrics`, `/healthz`, and dependency-aware `/readyz` on
+the ingest metrics port (2112 by default).
+
+The worker queue deliberately sheds stale jobs when full. A later poll is more
+useful than an old request waiting behind head-of-line work. Rising
+`ingest_poll_dropped_total` means worker capacity or upstream latency needs
+attention.
+
+## Tests
 
 ```powershell
 go test ./...
@@ -142,79 +118,6 @@ go vet ./...
 gofmt -l .
 ```
 
-Tests are table-driven per `.cursor/rules/system-arch.mdc` and use `httptest`
-rather than the network. Two invariants are worth calling out because they are
-easy to break silently:
-
-- `TestClassifiableTransitionsAlsoChangeFingerprint` — classification only runs
-  after the hash moves, so any transition `Classify` recognizes must also change
-  the fingerprint. Otherwise the rule is unreachable dead code.
-- `TestComputeStability` asserts `attending` is *excluded* from the hash. It
-  ticks constantly as people save an event, so including it would make the
-  fingerprint change on nearly every poll and destroy its value as a cheap
-  "nothing happened" filter.
-
-The store has no unit tests; it is exercised by the two mock end-to-end runs
-above against real Postgres and Redis.
-
-## Operational notes
-
-- `GET /metrics` on `:2112` (Prometheus), `GET /healthz` for liveness.
-- `EDMTRAIN_POLL_INTERVAL_MS` is floored at 10 s in code. Their terms set rate
-  limits at their discretion and forbid circumventing them.
-- `POLL_INTERVAL_MS` (RA) is floored at 500 ms. RA publishes no limits, which is
-  a reason for more restraint rather than less: an undocumented limit is enforced
-  by an IP block.
-- A 401/403 stops the discovery loop rather than retrying: a revoked key cannot
-  be retried into working, and hammering it is what their terms prohibit.
-- A missing `EDMTRAIN_API_KEY` or empty `RA_AREAS` disables that tier with a
-  warning instead of crashing the other tier.
-- `ingest_poll_dropped_total` above zero means the worker queue is shedding
-  stale poll jobs — undersized `RA_WORKERS` or a slow upstream. Shedding is
-  deliberate: a job queued for seconds is checking stale data, and the next tick
-  produces a fresher one.
-- `ingest_unclassified_change_total` climbing means the fingerprint includes a
-  field that changes for reasons `Classify` does not model, burning polls.
-
-## Cross-source resolution
-
-The two tiers do not share an id space: an EDMTrain event id is meaningless to
-RA. `internal/resolve` decides whether a show on one source is the same night as
-a show on the other, scoring venue similarity (0.45), lineup overlap (0.40), and
-title similarity (0.15), with the date as a hard filter rather than a weighted
-term. Successful matches are written to `event_links`.
-
-Candidates come from our own tables, not a fresh upstream query. The enumerate
-loop has already stored every RA event in the configured areas, so resolution
-costs one local SQL query instead of one API call per unresolved event.
-
-Two decisions carry most of the weight:
-
-- **A false link is worse than no link.** A wrong match means polling some other
-  event and alerting on a drop the user cannot buy, which is indistinguishable
-  from a bug. So a link needs both an absolute score (`AcceptScore` 0.60) and a
-  clear margin over the runner-up (`AmbiguityMargin` 0.10). Residencies produce
-  near-identical candidates on the same night at the same venue, and guessing
-  between them is exactly the failure this refuses to commit.
-- **Date tolerance is ±48 h, which is wider than it looks.** EDMTrain gives a
-  date with no time, stored as midnight UTC; RA gives a real instant. A 22:00
-  show in Detroit is 02:00 UTC the next day, so the same night is already 26 h
-  apart before the sources disagree at all. A tighter bound silently rejects
-  correct matches for precisely the late-night shows that matter here.
-
-Lineup overlap uses the overlap coefficient rather than Jaccard: a thirty-act
-festival bill that contains both of EDMTrain's two listed names is very likely
-the same event, but Jaccard scores that near zero purely because the sets differ
-in size.
-
-The loop is unlinked-only and re-examines rejections on the next pass, since a
-missing candidate now is not evidence that none exists — enumerate may simply not
-have stored the counterpart yet.
-
-Acting on the link is the harness's job: when it promotes an announced EDMTrain
-event, it follows `event_links` to the RA counterpart and watchlists *that* row
-with `watch_source = 'ra'`, which is what `DueWatchItems` requires. If the link
-does not exist yet, it still writes the EDMTrain row (so the decision is not
-lost) and a 30 s harness loop rewrites it once the resolver catches up. Writing
-the watchlist entry against the EDMTrain row and leaving it there would create
-something nothing polls.
+Tests use local doubles and table-driven cases. The critical invariants are that
+every classifiable transition changes the fingerprint, demand counters do not
+change it, first sight is silent, and an unclassified delta is not published.

@@ -12,6 +12,7 @@ const nextConfig: NextConfig = {
   // ioredis and pg open sockets and must not be bundled into the edge runtime.
   serverExternalPackages: ["ioredis", "pg"],
   reactStrictMode: true,
+  output: "standalone",
 };
 
 export default nextConfig;

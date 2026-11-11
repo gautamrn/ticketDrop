@@ -3,6 +3,7 @@
 # The template carries no secrets and is the only documentation of which
 # variables exist, so it must survive the .env.* rule above.
 !.env.example
+!.env.production.example
 
 # Personal context, not architecture. Excluded so the repo can go public
 # without advertising that it doubles as interview prep. Delete this line to
@@ -33,10 +34,7 @@ out/
 next-env.d.ts
 *.tsbuildinfo
 
-# Playwright
-playwright-report/
 test-results/
-.playwright/
 
 # Local data
 *.log

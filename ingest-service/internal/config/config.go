@@ -19,8 +19,7 @@ type Config struct {
 	RedisStream  string
 	StreamMaxLen int64
 
-	EDMTrain EDMTrain
-	RA       RA
+	RA RA
 
 	MetricsAddr string
 	LogLevel    slog.Level
@@ -43,11 +42,6 @@ type RA struct {
 	EnumerateInterval time.Duration
 	EnumeratePageSize int
 
-	// Cross-source linking. Slow and off the hot path: a missed link costs one
-	// unwatched show, so there is nothing to gain from running it often.
-	ResolveInterval  time.Duration
-	ResolveBatchSize int
-
 	// Development helper, not a production path.
 	SeedWatchlist int
 }
@@ -55,25 +49,6 @@ type RA struct {
 // Enabled reports whether the availability tier has anything to poll. RA needs
 // no credential, so the gate is configuration rather than auth.
 func (r RA) Enabled() bool { return len(r.AreaIDs) > 0 }
-
-type EDMTrain struct {
-	APIKey             string
-	BaseURL            string
-	LocationIDs        []string
-	PollInterval       time.Duration
-	RequestTimeout     time.Duration
-	IncludeLivestreams bool
-
-	// How far back each poll reaches beyond the stored watermark. Overlap is
-	// deliberately generous: EDMTrain documents createdStartDate as a UTC
-	// *date*, so sub-day precision is not available, and re-fetching costs
-	// nothing because dedupe is enforced by a unique constraint.
-	Lookback time.Duration
-}
-
-// Enabled reports whether the discovery tier can run. A missing credential
-// disables discovery without taking down availability polling.
-func (e EDMTrain) Enabled() bool { return e.APIKey != "" }
 
 func Load() (Config, error) {
 	loadDotEnv()
@@ -85,35 +60,20 @@ func Load() (Config, error) {
 		StreamMaxLen: int64(envInt("REDIS_STREAM_MAXLEN", 100_000)),
 		MetricsAddr:  ":" + env("INGEST_METRICS_PORT", "2112"),
 		LogLevel:     parseLevel(env("LOG_LEVEL", "info")),
-		EDMTrain: EDMTrain{
-			APIKey:             env("EDMTRAIN_API_KEY", ""),
-			BaseURL:            strings.TrimRight(env("EDMTRAIN_BASE_URL", "https://edmtrain.com/api"), "/"),
-			LocationIDs:        splitCSV(env("EDMTRAIN_LOCATION_IDS", "")),
-			PollInterval:       envMillis("EDMTRAIN_POLL_INTERVAL_MS", 60*time.Second),
-			RequestTimeout:     envMillis("POLL_TIMEOUT_MS", 10*time.Second),
-			IncludeLivestreams: envBool("EDMTRAIN_INCLUDE_LIVESTREAMS", false),
-			Lookback:           envMillis("EDMTRAIN_LOOKBACK_MS", 48*time.Hour),
-		},
 		RA: RA{
 			Endpoint:  env("RA_GRAPHQL_URL", "https://ra.co/graphql"),
 			UserAgent: env("RA_USER_AGENT", defaultUserAgent),
 			AreaIDs:   splitCSV(env("RA_AREAS", "")),
 			Lookahead: time.Duration(envInt("RA_LOOKAHEAD_DAYS", 60)) * 24 * time.Hour,
 
-			PollInterval:   envMillis("POLL_INTERVAL_MS", 2*time.Second),
+			PollInterval:   envMillis("POLL_INTERVAL_MS", 5*time.Second),
 			RequestTimeout: envMillis("POLL_TIMEOUT_MS", 4*time.Second),
 			BatchSize:      envInt("RA_BATCH_SIZE", 200),
-			// Little's Law: workers ≈ throughput × latency. 200 events per 2 s
-			// is 100/sec, and RA responds in roughly 200 ms, so ~20 workers
-			// saturates the target rate without piling on upstream concurrency.
-			Workers:   envInt("RA_WORKERS", 20),
-			QueueSize: envInt("RA_QUEUE_SIZE", 400),
+			Workers:        envInt("RA_WORKERS", 6),
+			QueueSize:      envInt("RA_QUEUE_SIZE", 400),
 
 			EnumerateInterval: envMillis("RA_ENUMERATE_INTERVAL_MS", 15*time.Minute),
 			EnumeratePageSize: envInt("RA_ENUMERATE_PAGE_SIZE", 100),
-
-			ResolveInterval:  envMillis("RESOLVE_INTERVAL_MS", 5*time.Minute),
-			ResolveBatchSize: envInt("RESOLVE_BATCH_SIZE", 100),
 
 			SeedWatchlist: envInt("RA_DEV_SEED_WATCHLIST", 0),
 		},
@@ -121,11 +81,6 @@ func Load() (Config, error) {
 
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
-	}
-	if cfg.EDMTrain.PollInterval < 10*time.Second {
-		// Their terms forbid circumventing rate limits and set them at their
-		// discretion. A floor in code is cheaper than an apology email.
-		return Config{}, fmt.Errorf("EDMTRAIN_POLL_INTERVAL_MS must be >= 10000, got %s", cfg.EDMTrain.PollInterval)
 	}
 	if cfg.RA.PollInterval < 500*time.Millisecond {
 		// RA publishes no limits, which is a reason for more restraint rather

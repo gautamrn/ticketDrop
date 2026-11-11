@@ -2,6 +2,9 @@ global:
   scrape_interval: 5s
   evaluation_interval: 15s
 
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   # The service runs on the host during development.
   # host.docker.internal resolves to the host from inside the container.

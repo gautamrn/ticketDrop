@@ -1,85 +1,70 @@
 # admin-panel
 
-Next.js (App Router) read model over the TicketDrop pipeline. Tails
-`ticket:drops:results`, reads the durable record from Postgres, and exposes the
-small set of overrides an operator needs when something goes wrong.
+Next.js App Router application for TicketDrop's authenticated user experience
+and operator read model.
 
-It contains no decision logic. Nothing here influences whether a drop is
-reserved; that lives entirely in the harness. The only writes are the four
-operator actions listed below.
+## User product
+
+- `/app` summarizes active watches and recent alerts.
+- `/app/settings` saves one configured RA metro and direct artist or venue
+  preferences. Preferences are plain labels written to `user_preferences`.
+- `/app/events` lists the enumerated RA catalogue and supports explicit Watch
+  and Unwatch. Subscription origin identifies scout-created and explicit rows.
+- `/app/alerts` reads personal delivery history from Postgres and shows the
+  classified change, status, RA link, seller link, and transition detail.
+
+All product routes validate the server session and row owner. A user may have
+at most 25 active subscriptions. Unwatch persists `user_disabled` so automatic
+matching does not silently restore the watch.
+
+The alert channel is the email verified by the sign-in provider. The settings
+API does not accept an arbitrary address and mark it verified.
+
+## Operator product
+
+`/admin` requires the `operator` role. It reads recent drops, transition detail,
+stream/group health, aggregate counts, and the shared watchlist. Its only
+pipeline mutation pauses or resumes a shared watch. Recent drops come from
+Postgres; Redis is used only for stream health.
+
+## API ownership
+
+```text
+GET/PATCH/DELETE /api/preferences    direct artist/venue preference management
+GET/PATCH        /api/settings       metro, verified channel, allowed areas
+GET/POST/DELETE  /api/subscriptions explicit Watch/Unwatch
+GET              /api/events        personal catalogue view
+GET              /api/alerts        personal durable alert history
+GET              /api/drops         operator drops and transitions
+GET/POST         /api/watchlist     operator shared-watch control
+GET              /api/health        operator Redis/Postgres health
+POST             /api/demo/replay   labeled demo data when enabled
+GET              /api/unsubscribe   signed email unsubscribe
+```
+
+Account and mutation endpoints are rate-limited. The replay endpoint is
+available only when `PUBLIC_DEMO_MODE=true` and is not part of the production
+profile.
 
 ## Run
-
-Needs the compose stack up and, to have anything to display, the ingest service
-and harness running.
 
 ```powershell
 cd admin-panel
 npm ci
-npm run dev     # http://localhost:3000
+npm run dev
 ```
 
-`next.config.ts` loads the repository-root `.env` so the panel reads the same
-`DATABASE_URL` and `REDIS_URL` as everything else. A real environment variable
-always wins over the file, so containerised deployment needs no change.
+The app loads the repository-root `.env`; process environment values take
+precedence. Local development exposes the demo credentials provider.
+Production requires configured GitHub and/or Google OAuth.
 
-For a production build, run `npm run build` followed by `npm run start`.
-
-The panel has no authentication and includes mutating operator endpoints. Keep
-it on localhost unless an authenticated reverse proxy protects it.
-
-## What it shows
-
-| Area | Source | Why it is there |
-| --- | --- | --- |
-| Live drops | SSE tail of `ticket:drops:results` | The pipeline's output, as it happens |
-| Drop detail | `drop_transitions` in Postgres | Per-stage `latency_ms` against the §3 budget |
-| Health strip | `XLEN`, `XINFO GROUPS`, aggregate counts | Consumer lag is the first symptom of a harness that cannot keep up |
-| Watchlist | `watchlist` ⋈ `events` | Which events are on the 2 s availability loop |
-| Preferences | `user_preferences` | Hype scoring fails closed; an empty set silently reserves nothing |
-| Cross-source links | `event_links` where `NOT confirmed` | §9 failure 9: low-confidence matches get a human, not an auto-merge |
-
-## Overrides
-
-Four, all narrow:
-
-- **Pause / resume a watch.** Deactivates rather than deletes, so the reason the
-  event was promoted survives the operator silencing it.
-- **Mute / unmute a preference.**
-- **Delete a preference.**
-- **Confirm / reject a cross-source link.** Rejecting deletes the row, because
-  the resolver only reconsiders events that currently have no link; leaving a
-  rejected row would permanently block a correct future match.
-
-**Adding a preference is deliberately not here.** A new preference needs its
-label embedded into a 1024-d vector, and the embedder lives in the harness. A
-TypeScript reimplementation would put scoring behavior in a service that is
-supposed to contain none, and any drift between the two would produce vectors
-that silently never match anything. Use the CLI:
+Verification:
 
 ```powershell
-cd agent-harness
-.\.venv\Scripts\python.exe -m harness prefs add --kind artist --label "Prospa"
+npm run lint
+npx tsc --noEmit
+npm run build
 ```
 
-## SSE rather than WebSockets
-
-`ARCHITECTURE.md` §2 drew this edge as a WebSocket. It is Server-Sent Events,
-and the reason is the traffic shape: the feed is strictly server-to-client.
-Every operator action is a mutation that wants a response, which is a POST. A
-bidirectional transport would buy a channel we never send on, and cost a custom
-server, since the App Router cannot upgrade a connection inside a route handler.
-`EventSource` also reconnects with backoff natively, which is the part of a
-hand-rolled WebSocket client that is most often subtly wrong.
-
-The cost is real and worth naming: `XREAD BLOCK` holds one Redis connection per
-connected browser, so this scales with concurrent operators rather than with
-drop volume. For a single-operator panel that is the right trade. Past roughly a
-dozen viewers it needs one shared tail fanning out to subscribers instead.
-
-## Rendering event links
-
-Outbound links are rendered **verbatim** through the `EventLink` component.
-EDMTrain's API terms require their event link to be displayed unmodified
-(`ARCHITECTURE.md` §10.1), so no tracking parameter, shortener, or redirect may
-be added. `target` and `rel` are anchor attributes and do not alter the URL.
+RA and seller URLs are rendered directly. Do not add redirect wrappers or
+tracking parameters to alert links.

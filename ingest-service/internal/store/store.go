@@ -29,12 +29,14 @@ func New(ctx context.Context, databaseURL string) (*Store, error) {
 
 func (s *Store) Close() { s.pool.Close() }
 
+func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
 // Watermark returns how far an adapter has consumed. A missing row is not an
 // error: first run legitimately has no cursor.
 func (s *Store) Watermark(ctx context.Context, src string) (time.Time, bool, error) {
 	var at time.Time
 	err := s.pool.QueryRow(ctx,
-		`SELECT cursor_at FROM ingest_watermarks WHERE source = $1::source_platform`, src,
+		`SELECT cursor_at FROM ingest_watermarks WHERE source = $1`, src,
 	).Scan(&at)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, nil
@@ -50,7 +52,7 @@ func (s *Store) Watermark(ctx context.Context, src string) (time.Time, bool, err
 func (s *Store) SetWatermark(ctx context.Context, src string, at time.Time) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO ingest_watermarks (source, cursor_at)
-		VALUES ($1::source_platform, $2)
+		VALUES ($1, $2)
 		ON CONFLICT (source) DO UPDATE
 		SET cursor_at  = GREATEST(ingest_watermarks.cursor_at, EXCLUDED.cursor_at),
 		    updated_at = now()`, src, at)
@@ -96,11 +98,11 @@ func (s *Store) UpsertEvent(ctx context.Context, ev source.Event) (UpsertResult,
 		INSERT INTO events (
 			source, source_event_id, title, content_url, ticket_link, venue_id,
 			starts_at, ends_at, listing_date, is_ticketed, attending,
-			minimum_age, genres, announced_at, raw
+			minimum_age, genres, raw
 		) VALUES (
-			$1::source_platform, $2, $3, $4, $5, $6,
+			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10, $11,
-			$12, $13, $14, $15::jsonb
+			$12, $13, $14::jsonb
 		)
 		ON CONFLICT (source, source_event_id) DO UPDATE SET
 			title        = EXCLUDED.title,
@@ -114,14 +116,12 @@ func (s *Store) UpsertEvent(ctx context.Context, ev source.Event) (UpsertResult,
 			attending    = COALESCE(EXCLUDED.attending, events.attending),
 			minimum_age  = COALESCE(EXCLUDED.minimum_age, events.minimum_age),
 			genres       = EXCLUDED.genres,
-			-- Keep the earliest announcement time we ever saw.
-			announced_at = COALESCE(events.announced_at, EXCLUDED.announced_at),
 			raw          = EXCLUDED.raw,
 			last_seen_at = now()
 		RETURNING id::text, (xmax = 0)`,
 		ev.Source, ev.SourceEventID, ev.Title, nullStr(ev.ContentURL), nullStr(ev.TicketLink), venueID,
 		ev.StartsAt, ev.EndsAt, ev.ListingDate, ev.IsTicketed, ev.Attending,
-		ev.MinimumAge, ev.Genres, ev.AnnouncedAt, string(ev.Raw),
+		ev.MinimumAge, ev.Genres, string(ev.Raw),
 	).Scan(&res.EventID, &res.IsNew)
 	if err != nil {
 		return UpsertResult{}, fmt.Errorf("store: upsert event %s/%s: %w", ev.Source, ev.SourceEventID, err)
@@ -133,11 +133,11 @@ func (s *Store) UpsertEvent(ctx context.Context, ev source.Event) (UpsertResult,
 			return UpsertResult{}, err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO event_artists (event_id, artist_id, billing, b2b_with_next)
-			VALUES ($1, $2, $3, $4)
+			INSERT INTO event_artists (event_id, artist_id, billing)
+			VALUES ($1, $2, $3)
 			ON CONFLICT (event_id, artist_id) DO UPDATE
-			SET billing = EXCLUDED.billing, b2b_with_next = EXCLUDED.b2b_with_next`,
-			res.EventID, artistID, int16(i), ar.B2BWithNext,
+			SET billing = EXCLUDED.billing`,
+			res.EventID, artistID, int16(i),
 		); err != nil {
 			return UpsertResult{}, fmt.Errorf("store: link artist: %w", err)
 		}
@@ -170,12 +170,8 @@ type WatchItem struct {
 
 // DueWatchItems returns watchlisted events ordered least-recently-polled first.
 //
-// The join constrains to events belonging to watch_source. An event discovered
-// on EDMTrain cannot be polled on RA using its EDMTrain id, so cross-source
-// promotion requires resolving the show to an RA event row first. Unresolved
-// rows remain durable but are not returned, avoiding upstream lookups that
-// would 404 until the resolver links them.
-func (s *Store) DueWatchItems(ctx context.Context, watchSource string, limit int) ([]WatchItem, error) {
+// The source predicate is defensive; the compact schema permits only RA.
+func (s *Store) DueWatchItems(ctx context.Context, sourceName string, limit int) ([]WatchItem, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT e.id::text, e.source::text, e.source_event_id,
 		       e.title, COALESCE(e.content_url, ''), COALESCE(e.ticket_link, ''),
@@ -190,10 +186,9 @@ func (s *Store) DueWatchItems(ctx context.Context, watchSource string, limit int
 		JOIN events e ON e.id = w.event_id
 		LEFT JOIN venues v ON v.id = e.venue_id
 		WHERE w.active
-		  AND w.watch_source = $1::source_platform
-		  AND e.source = $1::source_platform
+		  AND e.source = $1
 		ORDER BY w.last_polled_at NULLS FIRST
-		LIMIT $2`, watchSource, limit)
+		LIMIT $2`, sourceName, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: due watch items: %w", err)
 	}
@@ -242,104 +237,15 @@ func (s *Store) RecordSnapshot(ctx context.Context, eventID, fp string, snap sou
 	return nil
 }
 
-// LinkTarget is an event considered for cross-source linking, carrying the
-// fields the matcher scores on.
-type LinkTarget struct {
-	EventID       string
-	SourceEventID string
-	Title         string
-	VenueName     string
-	StartsAt      time.Time
-	Artists       []string
-}
-
-const linkTargetColumns = `
-	e.id::text, e.source_event_id, e.title,
-	COALESCE(v.name, ''), COALESCE(e.starts_at, e.listing_date),
-	COALESCE((
-	    SELECT array_agg(a.name ORDER BY ea.billing NULLS LAST, a.name)
-	    FROM event_artists ea
-	    JOIN artists a ON a.id = ea.artist_id
-	    WHERE ea.event_id = e.id
-	), '{}')`
-
-// UnlinkedEvents returns upcoming events from `src` that have no cross-source
-// link yet, oldest-discovered first.
-func (s *Store) UnlinkedEvents(ctx context.Context, src string, limit int) ([]LinkTarget, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+linkTargetColumns+`
-		FROM events e
-		LEFT JOIN venues v ON v.id = e.venue_id
-		WHERE e.source = $1::source_platform
-		  AND COALESCE(e.starts_at, e.listing_date) > now()
-		  AND NOT EXISTS (SELECT 1 FROM event_links l WHERE l.event_id = e.id)
-		ORDER BY e.created_at
-		LIMIT $2`, src, limit)
-	if err != nil {
-		return nil, fmt.Errorf("store: unlinked events: %w", err)
-	}
-	return scanLinkTargets(rows)
-}
-
-// LinkCandidates returns events from `src` scheduled near `around`.
-//
-// Candidates come from our own tables rather than a fresh upstream query. The
-// enumerate loop has already stored every RA event in the configured areas, so
-// resolution costs one local query instead of one API call per unresolved event.
-func (s *Store) LinkCandidates(ctx context.Context, src string, around time.Time, slack time.Duration) ([]LinkTarget, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+linkTargetColumns+`
-		FROM events e
-		LEFT JOIN venues v ON v.id = e.venue_id
-		WHERE e.source = $1::source_platform
-		  AND COALESCE(e.starts_at, e.listing_date) BETWEEN $2 AND $3`,
-		src, around.Add(-slack), around.Add(slack))
-	if err != nil {
-		return nil, fmt.Errorf("store: link candidates: %w", err)
-	}
-	return scanLinkTargets(rows)
-}
-
-func scanLinkTargets(rows pgx.Rows) ([]LinkTarget, error) {
-	defer rows.Close()
-
-	var out []LinkTarget
-	for rows.Next() {
-		var t LinkTarget
-		if err := rows.Scan(&t.EventID, &t.SourceEventID, &t.Title,
-			&t.VenueName, &t.StartsAt, &t.Artists); err != nil {
-			return nil, fmt.Errorf("store: scan link target: %w", err)
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
-}
-
-// LinkEvents records that `eventID` is the same show as `canonicalID`.
-//
-// confirmed stays false: this is an automated guess, and the column exists so a
-// human correction can be distinguished from a machine match later.
-func (s *Store) LinkEvents(ctx context.Context, eventID, canonicalID string, confidence float64, method string) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO event_links (event_id, canonical_event_id, match_confidence, match_method)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (event_id) DO NOTHING`,
-		eventID, canonicalID, confidence, method)
-	if err != nil {
-		return fmt.Errorf("store: link events: %w", err)
-	}
-	return nil
-}
-
 // SeedWatchlist is a development helper: it watchlists the most-saved events for
 // a source so the availability loop has something to poll before the harness
-// exists to promote events by hype score. Not part of the production path.
+// reconciler runs. Not part of the production path.
 func (s *Store) SeedWatchlist(ctx context.Context, src string, limit int) (int, error) {
 	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO watchlist (event_id, tier, watch_source, reason)
-		SELECT id, 'hot', $1::source_platform, 'dev seed: top by attending'
+		INSERT INTO watchlist (event_id, tier, reason)
+		SELECT id, 'hot', 'dev seed: top by attending'
 		FROM events
-		WHERE source = $1::source_platform
+		WHERE source = $1
 		ORDER BY attending DESC NULLS LAST
 		LIMIT $2
 		ON CONFLICT (event_id) DO NOTHING`, src, limit)
@@ -359,16 +265,17 @@ func rawOrNull(raw []byte) string {
 func upsertVenue(ctx context.Context, tx pgx.Tx, src string, v source.Venue) (string, error) {
 	var id string
 	err := tx.QueryRow(ctx, `
-		INSERT INTO venues (source, source_venue_id, name, area_name, latitude, longitude, content_url)
-		VALUES ($1::source_platform, $2, $3, $4, $5, $6, $7)
+		INSERT INTO venues (source, source_venue_id, name, area_id, area_name, latitude, longitude, content_url)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (source, source_venue_id) DO UPDATE SET
 			name        = EXCLUDED.name,
+			area_id     = COALESCE(EXCLUDED.area_id, venues.area_id),
 			area_name   = COALESCE(EXCLUDED.area_name, venues.area_name),
 			latitude    = COALESCE(EXCLUDED.latitude, venues.latitude),
 			longitude   = COALESCE(EXCLUDED.longitude, venues.longitude),
 			content_url = COALESCE(EXCLUDED.content_url, venues.content_url)
 		RETURNING id::text`,
-		src, v.SourceVenueID, v.Name, nullStr(v.AreaName), v.Latitude, v.Longitude, nullStr(v.ContentURL),
+		src, v.SourceVenueID, v.Name, v.AreaID, nullStr(v.AreaName), v.Latitude, v.Longitude, nullStr(v.ContentURL),
 	).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("store: upsert venue %q: %w", v.Name, err)
@@ -380,7 +287,7 @@ func upsertArtist(ctx context.Context, tx pgx.Tx, src string, a source.Artist) (
 	var id string
 	err := tx.QueryRow(ctx, `
 		INSERT INTO artists (source, source_artist_id, name, slug)
-		VALUES ($1::source_platform, $2, $3, $4)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (source, source_artist_id) DO UPDATE SET
 			name = EXCLUDED.name,
 			slug = COALESCE(EXCLUDED.slug, artists.slug)

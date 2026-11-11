@@ -279,7 +279,4 @@ func TestAdapterMetadata(t *testing.T) {
 	if a.Name() != source.PlatformRA {
 		t.Errorf("Name() = %q", a.Name())
 	}
-	if a.Tier() != source.TierAvailability {
-		t.Errorf("Tier() = %q, RA must be the availability tier", a.Tier())
-	}
 }

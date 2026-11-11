@@ -1,0 +1,31 @@
+groups:
+  - name: ticketdrop-ingest
+    rules:
+      - alert: TicketDropIngestDown
+        expr: up{job="ingest-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: TicketDrop ingest metrics target is down
+      - alert: TicketDropPollErrors
+        expr: increase(ingest_poll_total{status!="success"}[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Repeated source polling failures
+      - alert: TicketDropDroppedPollJobs
+        expr: increase(ingest_poll_dropped_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Availability jobs are being shed
+      - alert: TicketDropPublishP99Budget
+        expr: histogram_quantile(0.99, sum by (le) (rate(ingest_publish_duration_seconds_bucket[10m]))) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Stream append p99 exceeds the 50ms budget

@@ -65,36 +65,18 @@ export function HealthBar() {
         label="consumers"
         value={health?.consumers}
         tone={health && health.consumers === 0 ? "danger" : undefined}
-        title="Harness workers attached to the consumer group. Zero means nothing is processing drops."
+        title="Harness workers attached to the consumer group. Zero means no onsale signals are being processed."
       />
       <Stat label="input stream" value={streamLengths["ticket:drops"]} />
-      <Stat label="result stream" value={streamLengths["ticket:drops:results"]} />
 
       <Divider />
 
       <Stat label="watching" value={counts.watchlist} />
       <Stat
-        label="links to review"
-        value={counts.pendingLinks}
-        tone={counts.pendingLinks ? "warn" : undefined}
+        label="failed deliveries"
+        value={counts.deliveriesFailed}
+        tone={counts.deliveriesFailed ? "danger" : undefined}
       />
-
-      {health && health.activePreferences === 0 && (
-        <span
-          className="ml-auto rounded bg-danger/15 px-2 py-1 text-[11px] font-medium text-danger ring-1 ring-inset ring-danger/40"
-          title="Hype scoring fails closed. With no preferences every drop scores zero and nothing is ever reserved or promoted."
-        >
-          no preferences — nothing will ever reserve
-        </span>
-      )}
-      {health && health.activePreferences > 0 && !health.soundScoringAvailable && (
-        <span
-          className="ml-auto rounded bg-ink-800 px-2 py-1 text-[11px] text-ink-400 ring-1 ring-inset ring-ink-700"
-          title="No artist has a sound_signature, so the 0.25 sound weight is excluded from the denominator rather than charged against every event."
-        >
-          sound signal unavailable — weight excluded
-        </span>
-      )}
     </div>
   );
 }

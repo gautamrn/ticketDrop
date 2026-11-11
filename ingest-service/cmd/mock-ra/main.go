@@ -174,10 +174,9 @@ func (s *server) mutate(apply func(*event)) http.HandlerFunc {
 func (s *server) seed() {
 	now := time.Now().UTC()
 
-	// Dates mirror cmd/mock-edmtrain's fixtures so the cross-source resolver has
-	// something real to link. Doors at 22:00, built as a real time and formatted
-	// with a real layout: embedding "22" in the layout string would be parsed as
-	// a day-of-month component and emit garbage.
+	// Doors are at 22:00, built as a real time and formatted with a real layout:
+	// embedding "22" in the layout string would be parsed as a day-of-month
+	// component and emit garbage.
 	mk := func(id, title, venueID, venueName string, monthsOut, attending int, ticketed bool) *event {
 		showDate := now.AddDate(0, monthsOut, 0).Truncate(24 * time.Hour)
 		doors := showDate.Add(22 * time.Hour)
@@ -204,26 +203,21 @@ func (s *server) seed() {
 		}
 	}
 
-	// Matches mock-edmtrain's /admin/add event: Prospa at Spot Lite, two months
-	// out. Promoter branding differs on purpose, to prove the matcher tolerates it.
+	// The verify profile follows Prospa and waits for this event.
 	prospa := mk("90001", "Paxahau presents: Prospa (Live)", "5001", "Spot Lite", 2, 214, false)
 	prospa.Artists = []actor{{ID: "771", Name: "Prospa", ContentURL: "/dj/prospa"}}
 
-	// Matches mock-edmtrain's first seeded event, one month out.
+	// A second event verifies that the catalogue is not a one-row fixture.
 	omar := mk("90002", "Omar S / Theo Parrish", "5001", "Spot Lite", 1, 96, false)
 	omar.Artists = []actor{
 		{ID: "101", Name: "Omar S", ContentURL: "/dj/omars"},
 		{ID: "102", Name: "Theo Parrish", ContentURL: "/dj/theoparrish"},
 	}
 
-	// Deliberately three months off from EDMTrain's Movement fixture, so it must
-	// NOT link: the same festival on a different date is a different night.
 	queued := mk("90003", "Movement Detroit", "5003", "Hart Plaza", 1, 4820, true)
-	// Carries a real lineup so this event can score high enough to reach the
-	// reservation stage, which is the only way to prove that queueItEnabled
-	// forces alert-only rather than merely being carried in the message.
+	// Carries a real lineup and waiting-room marker for alert rendering tests.
 	queued.Artists = []actor{{ID: "201", Name: "Carl Craig", ContentURL: "/dj/carlcraig"}}
-	queued.QueueItEnabled = true // must be forced to alert-only downstream
+	queued.QueueItEnabled = true
 	queued.Cost = "$180 - $320"
 
 	for _, e := range []*event{prospa, omar, queued} {

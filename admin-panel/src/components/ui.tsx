@@ -68,11 +68,8 @@ export function Tag({
 /**
  * An outbound link to a ticketing source.
  *
- * The href is rendered exactly as stored. EDMTrain's API terms require their
- * event link to be displayed unmodified wherever the event appears
- * (ARCHITECTURE.md §10.1), so this component must never append a tracking
- * parameter, shorten the URL, or route it through a redirect. `target` and `rel`
- * are attributes of the anchor and do not alter the URL itself.
+ * The href is rendered exactly as stored: no tracking parameter, shortener, or
+ * redirect. `target` and `rel` do not alter the URL itself.
  */
 export function EventLink({
   href,
