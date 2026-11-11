@@ -1,9 +1,11 @@
 # TicketDrop architecture
 
 TicketDrop is an RA-only onsale-signal product. A user chooses one configured
-Resident Advisor metro and follows exact artist or venue names. The system
-enumerates that metro, polls each subscribed event once through a shared
-watchlist, and emails subscribers only after a classified sale-state change.
+Resident Advisor metro, follows exact artist or venue names, and may opt into
+an in-app discovery feed based on exact RA genres and an optional listed-price
+ceiling. The system enumerates that metro, polls each subscribed event once
+through a shared watchlist, and emails subscribers only after a classified
+sale-state change.
 
 ## Source limits and change detection
 
@@ -51,9 +53,9 @@ Go ingest ── snapshot + outbox ──▶ Postgres
   `ingest_outbox`, and publishing to `ticket:drops`.
 - Python owns the scout, subscription reconciliation, stream consumption,
   `watchlist`, drops, transitions, and email deliveries. It never polls RA.
-- Next.js owns authenticated settings and direct artist/venue preference
-  writes, explicit Watch/Unwatch, personal event and alert views, and the
-  operator read model.
+- Next.js owns authenticated settings, direct artist/venue preference writes,
+  feed-only discovery matching, explicit Watch/Unwatch, personal event and
+  alert views, and the operator read model.
 - Postgres is the durable system of record. Redis contains the stream, poll
   snapshots (`snap:ra:<event_id>`), and short-lived claims.
 
@@ -66,6 +68,20 @@ work, not ten upstream polls.
 The catalogue is normally Go-owned. If a valid stream message refers to a
 missing event, Python may upsert a marked stub so the drop audit is not lost;
 the next Go catalogue upsert corrects it.
+
+## Discovery semantics
+
+Discovery is a Postgres read model evaluated by the Next.js panel; it does not
+create subscriptions, watchlist rows, or email deliveries. A discovery becomes
+alertable only after the user explicitly selects Watch. This prevents a broad
+genre preference from multiplying upstream polls or producing an email storm.
+
+Genre matching is case-normalized equality against RA's catalogue labels, not
+fuzzy or model-generated matching. RA exposes cost as free-form text. The panel
+therefore recognizes only explicit USD, GBP, EUR, and free listings; when a
+price ceiling is configured, unknown or differently denominated costs are
+excluded rather than guessed. The query first bounds candidates to 200 upcoming
+events in the user's metro before parsing costs in the application.
 
 ## Delivery and idempotency
 

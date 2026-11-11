@@ -210,12 +210,17 @@ CREATE TABLE verification_token (
 );
 
 CREATE TABLE user_settings (
-    user_id      uuid PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
-    ra_area_id   integer,
-    ra_area_name text,
-    demo_mode    boolean NOT NULL DEFAULT false,
-    created_at   timestamptz NOT NULL DEFAULT now(),
-    updated_at   timestamptz NOT NULL DEFAULT now()
+    user_id             uuid PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+    ra_area_id          integer,
+    ra_area_name        text,
+    demo_mode           boolean NOT NULL DEFAULT false,
+    discovery_enabled   boolean NOT NULL DEFAULT false,
+    discovery_genres    text[] NOT NULL DEFAULT '{}',
+    discovery_max_price numeric(8, 2) CHECK (discovery_max_price >= 0),
+    discovery_currency  text NOT NULL DEFAULT 'USD'
+        CHECK (discovery_currency IN ('USD', 'GBP', 'EUR')),
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    updated_at          timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE user_preferences (

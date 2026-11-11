@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { signOut } from "next-auth/react";
 
@@ -7,6 +8,10 @@ type Props = {
   initial: {
     ra_area_id: number | null;
     ra_area_name: string | null;
+    discovery_enabled: boolean;
+    discovery_genres: string[];
+    discovery_max_price: number | null;
+    discovery_currency: string;
   } | null;
   email: string;
   preferences: Array<{ id: string; label: string; kind: string; active: boolean }>;
@@ -19,18 +24,40 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
   const [label, setLabel] = useState("");
   const [kind, setKind] = useState("artist");
   const [message, setMessage] = useState("");
+  const [discoveryEnabled, setDiscoveryEnabled] = useState(
+    initial?.discovery_enabled ?? false,
+  );
+  const [discoveryGenres, setDiscoveryGenres] = useState(
+    initial?.discovery_genres.join(", ") ?? "",
+  );
+  const [discoveryMaxPrice, setDiscoveryMaxPrice] = useState(
+    initial?.discovery_max_price?.toString() ?? "",
+  );
+  const [discoveryCurrency, setDiscoveryCurrency] = useState(
+    initial?.discovery_currency ?? "USD",
+  );
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
+    const maxPrice = discoveryMaxPrice.trim() === "" ? null : Number(discoveryMaxPrice);
     const response = await fetch("/api/settings", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         areaId,
         alertEmail: email,
+        discoveryEnabled,
+        discoveryGenres: discoveryGenres.split(","),
+        discoveryMaxPrice: maxPrice,
+        discoveryCurrency,
       }),
     });
-    setMessage(response.ok ? "Settings saved." : "Could not save settings.");
+    if (response.ok) {
+      setMessage("Settings saved. Your discovery feed has been refreshed.");
+    } else {
+      const body = (await response.json()) as { error?: string };
+      setMessage(body.error ?? "Could not save settings.");
+    }
   };
 
   const addPreference = async (event: FormEvent) => {
@@ -106,12 +133,81 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
             </p>
             <span className="mt-1 block text-xs text-ink-400">Uses your verified sign-in address.</span>
           </div>
+          <fieldset className="space-y-4 border-t border-ink-800 pt-5">
+            <legend className="text-sm font-medium">Discovery feed</legend>
+            <label className="flex items-start gap-3 text-sm">
+              <input
+                type="checkbox"
+                checked={discoveryEnabled}
+                onChange={(event) => setDiscoveryEnabled(event.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                <span className="block text-ink-300">Show preference-based discoveries</span>
+                <span className="mt-1 block text-xs text-ink-400">
+                  Discoveries stay in the app. Only explicit follows and exact-name matches email
+                  you.
+                </span>
+              </span>
+            </label>
+            <label className="block text-sm">
+              <span className="text-ink-300">Genres</span>
+              <input
+                value={discoveryGenres}
+                onChange={(event) => setDiscoveryGenres(event.target.value)}
+                placeholder="techno, house"
+                disabled={!discoveryEnabled}
+                className="mt-2 w-full rounded-md border border-ink-700 bg-ink-900 px-3 py-2 disabled:opacity-50"
+              />
+              <span className="mt-1 block text-xs text-ink-400">
+                Comma-separated exact RA genre labels, up to eight.
+              </span>
+            </label>
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <label className="block text-sm">
+                <span className="text-ink-300">Maximum listed price</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="10000"
+                  step="0.01"
+                  value={discoveryMaxPrice}
+                  onChange={(event) => setDiscoveryMaxPrice(event.target.value)}
+                  placeholder="No limit"
+                  disabled={!discoveryEnabled}
+                  className="mt-2 w-full rounded-md border border-ink-700 bg-ink-900 px-3 py-2 disabled:opacity-50"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-ink-300">Currency</span>
+                <select
+                  value={discoveryCurrency}
+                  onChange={(event) => setDiscoveryCurrency(event.target.value)}
+                  disabled={!discoveryEnabled}
+                  className="mt-2 rounded-md border border-ink-700 bg-ink-900 px-3 py-2 disabled:opacity-50"
+                >
+                  <option value="USD">USD</option>
+                  <option value="GBP">GBP</option>
+                  <option value="EUR">EUR</option>
+                </select>
+              </label>
+            </div>
+            <p className="text-xs text-ink-400">
+              Events with unknown or differently denominated prices are excluded when a maximum is
+              set.
+            </p>
+          </fieldset>
           <button
             disabled={areas.length === 0}
             className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
             Save settings
           </button>
+          {discoveryEnabled && (
+            <Link href="/app/discover" className="ml-3 text-sm text-accent">
+              Open discovery feed
+            </Link>
+          )}
         </form>
       </div>
       <div>

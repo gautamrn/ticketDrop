@@ -1,5 +1,6 @@
 import { requireUser } from "@/lib/access";
 import { query } from "@/lib/db";
+import { DISCOVERY_CURRENCIES, normalizeGenres } from "@/lib/discovery";
 import { rateLimit } from "@/lib/rate-limit";
 import { configuredRaArea, configuredRaAreas } from "@/lib/ra-areas";
 
@@ -10,7 +11,8 @@ export async function GET() {
   const access = await requireUser();
   if (access.response) return access.response;
   const settings = await query(
-    `SELECT ra_area_id, ra_area_name, demo_mode
+    `SELECT ra_area_id, ra_area_name, demo_mode, discovery_enabled,
+            discovery_genres, discovery_max_price::text, discovery_currency
        FROM user_settings WHERE user_id = $1::uuid`,
     [access.user.id],
   );
@@ -42,6 +44,10 @@ export async function PATCH(request: Request) {
   const body = (await request.json()) as {
     areaId?: number;
     alertEmail?: string;
+    discoveryEnabled?: boolean;
+    discoveryGenres?: unknown;
+    discoveryMaxPrice?: number | null;
+    discoveryCurrency?: string;
   };
   const area = body.areaId === undefined ? undefined : configuredRaArea(body.areaId);
   if (!area) {
@@ -56,14 +62,55 @@ export async function PATCH(request: Request) {
       { status: 400 },
     );
   }
+  const genres =
+    body.discoveryGenres === undefined ? undefined : normalizeGenres(body.discoveryGenres);
+  const hasMaxPrice = Object.prototype.hasOwnProperty.call(body, "discoveryMaxPrice");
+  const maxPrice = body.discoveryMaxPrice;
+  if (
+    hasMaxPrice &&
+    maxPrice !== null &&
+    (typeof maxPrice !== "number" || !Number.isFinite(maxPrice) || maxPrice < 0 || maxPrice > 10_000)
+  ) {
+    return Response.json({ error: "discoveryMaxPrice must be between 0 and 10000" }, { status: 400 });
+  }
+  if (
+    body.discoveryCurrency !== undefined &&
+    !DISCOVERY_CURRENCIES.includes(
+      body.discoveryCurrency as (typeof DISCOVERY_CURRENCIES)[number],
+    )
+  ) {
+    return Response.json({ error: "unsupported discoveryCurrency" }, { status: 400 });
+  }
 
   await query(
-    `INSERT INTO user_settings (user_id, ra_area_id, ra_area_name)
-     VALUES ($1::uuid, $2, $3)
+    `INSERT INTO user_settings (
+       user_id, ra_area_id, ra_area_name, discovery_enabled,
+       discovery_genres, discovery_max_price, discovery_currency
+     )
+     VALUES (
+       $1::uuid, $2, $3, COALESCE($4, false), COALESCE($5::text[], '{}'),
+       $6, COALESCE($7, 'USD')
+     )
      ON CONFLICT (user_id) DO UPDATE SET
        ra_area_id = EXCLUDED.ra_area_id,
-       ra_area_name = EXCLUDED.ra_area_name`,
-    [access.user.id, area.id, area.name],
+       ra_area_name = EXCLUDED.ra_area_name,
+       discovery_enabled = COALESCE($4, user_settings.discovery_enabled),
+       discovery_genres = COALESCE($5::text[], user_settings.discovery_genres),
+       discovery_max_price = CASE
+         WHEN $8::boolean THEN $6
+         ELSE user_settings.discovery_max_price
+       END,
+       discovery_currency = COALESCE($7, user_settings.discovery_currency)`,
+    [
+      access.user.id,
+      area.id,
+      area.name,
+      body.discoveryEnabled ?? null,
+      genres ?? null,
+      hasMaxPrice ? maxPrice : null,
+      body.discoveryCurrency ?? null,
+      hasMaxPrice,
+    ],
   );
   if (access.user.email) {
     await query(

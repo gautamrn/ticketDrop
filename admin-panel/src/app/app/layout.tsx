@@ -13,6 +13,9 @@ export default async function ProductLayout({ children }: { children: React.Reac
           TicketDrop
         </Link>
         <nav className="flex items-center gap-1 text-sm" aria-label="Product">
+          <Link className="rounded px-3 py-2 hover:bg-ink-850" href="/app/discover">
+            Discover
+          </Link>
           <Link className="rounded px-3 py-2 hover:bg-ink-850" href="/app/events">
             Events
           </Link>
