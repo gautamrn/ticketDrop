@@ -7,6 +7,21 @@ self-healing browser assist stage.
 Design decisions, the state machine, the latency budget, and the failure-mode
 analysis all live in **[`ARCHITECTURE.md`](./ARCHITECTURE.md)**. Read that first.
 
+[![CI](https://github.com/gautamrn/ticketDrop/actions/workflows/ci.yml/badge.svg)](https://github.com/gautamrn/ticketDrop/actions/workflows/ci.yml)
+
+**Stack:** Go · Redis Streams · PostgreSQL (pgvector) · Python / LangGraph · Next.js
+
+**Verified:** 294 automated tests (Go + Python) passing, gated by GitHub Actions
+CI running lint, typecheck, and builds on every push. The pipeline guarantees
+at-least-once, zero-duplicate delivery — events survive worker crashes without
+being alerted twice.
+
+## Screenshots
+
+The admin panel runs over a live mock pipeline — a drop feed, an FSM
+transition trace per drop, and a service health strip. Capture guide:
+[`docs/screenshots/`](./docs/screenshots/README.md).
+
 Ingestion runs in two tiers. **Discovery** polls EDMTrain once a minute using its
 `createdStartDate` change feed to learn what shows exist. **Availability** polls
 Resident Advisor every two seconds against a watchlist, fingerprinting each
@@ -139,16 +154,11 @@ which you apply for while signed in at
 arrives, `ingest-service/cmd/mock-edmtrain` serves the same contract locally —
 see [`ingest-service/README.md`](./ingest-service/README.md).
 
-## Going public
+## Security & history
 
-This repo is private during development and intended to go public later. Two
-things to know before flipping that switch, because both are hard to undo:
-
-**Git history is permanent.** Making a repo public exposes every commit ever
-made, not just the current tree. A secret committed once and deleted later is
-still in the history and still readable. `.env` is gitignored from the first
-commit for that reason — keep it that way, and never commit a real EDMTrain key,
-Voyage key, or Anthropic key even temporarily.
+**Secrets were never committed.** `.env` has been gitignored from the first
+commit, no API keys (EDMTrain, Voyage, Anthropic) appear anywhere in the
+history, and `.env.example` carries placeholders only.
 
 **What is deliberately excluded.** `.cursor/rules/interview-prep.mdc` is
 gitignored: it is personal context rather than architecture. `system-arch.mdc`
