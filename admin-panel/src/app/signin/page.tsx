@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { auth, signIn } from "@/auth";
+import { Brand } from "@/components/ui";
 
 export default async function SignInPage() {
   const session = await auth();
@@ -13,16 +14,22 @@ export default async function SignInPage() {
   const localAccount = Boolean(process.env.LOCAL_USER_EMAIL);
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-md items-center px-6">
-      <div className="w-full rounded-xl border border-ink-700 bg-ink-900 p-6">
-        <Link href="/" className="text-xs text-ink-400 hover:text-ink-100">
-          ← TicketDrop
+    <main className="site-shell grid min-h-screen items-center gap-12 py-12 lg:grid-cols-[1.1fr_0.9fr]">
+      <section className="max-w-2xl">
+        <Link href="/">
+          <Brand />
         </Link>
-        <h1 className="mt-6 text-2xl font-semibold">Sign in</h1>
-        <p className="mt-2 text-sm text-ink-400">
-          Your metro, followed artists and venues, and alert history are private to your account.
+        <p className="eyebrow mt-20">Your private signal desk</p>
+        <h1 className="page-title mt-6">Pick up where the catalogue left off.</h1>
+        <p className="mt-6 max-w-lg text-lg leading-8 text-ink-400">
+          Your metro, followed names, discovery profile, and complete alert audit stay attached to
+          your account.
         </p>
-        <div className="mt-6 space-y-3">
+      </section>
+      <section className="surface w-full rounded-[2rem] p-7 sm:p-10">
+        <p className="text-sm text-ink-400">Account access</p>
+        <h2 className="mt-2 text-3xl font-medium tracking-[-0.04em]">Sign in to TicketDrop</h2>
+        <div className="mt-8 space-y-3">
           {process.env.AUTH_GOOGLE_ID && (
             <form
               action={async () => {
@@ -30,7 +37,7 @@ export default async function SignInPage() {
                 await signIn("google", { redirectTo: "/app" });
               }}
             >
-              <button className="w-full rounded-md bg-ink-100 px-4 py-2 text-sm font-medium text-ink-950">
+              <button className="button-primary w-full">
                 Continue with Google
               </button>
             </form>
@@ -42,7 +49,7 @@ export default async function SignInPage() {
                 await signIn("github", { redirectTo: "/app" });
               }}
             >
-              <button className="w-full rounded-md border border-ink-600 px-4 py-2 text-sm">
+              <button className="button-secondary w-full">
                 Continue with GitHub
               </button>
             </form>
@@ -54,13 +61,17 @@ export default async function SignInPage() {
                 await signIn("local", { redirectTo: "/app" });
               }}
             >
-              <button className="w-full rounded-md border border-accent px-4 py-2 text-sm text-accent">
+              <button className="button-secondary w-full border-accent/30 text-accent">
                 {localAccount ? "Open local account" : "Open local demo"}
               </button>
             </form>
           )}
         </div>
-      </div>
+        <p className="mt-8 border-t border-white/[0.07] pt-5 text-xs leading-5 text-ink-400">
+          TicketDrop stores preferences and delivery state in Postgres. It never stores ticketing
+          credentials or enters a seller flow.
+        </p>
+      </section>
     </main>
   );
 }

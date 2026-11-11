@@ -24,6 +24,7 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
   const [label, setLabel] = useState("");
   const [kind, setKind] = useState("artist");
   const [message, setMessage] = useState("");
+  const [messageError, setMessageError] = useState(false);
   const [discoveryEnabled, setDiscoveryEnabled] = useState(
     initial?.discovery_enabled ?? false,
   );
@@ -53,9 +54,11 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
       }),
     });
     if (response.ok) {
+      setMessageError(false);
       setMessage("Settings saved. Your discovery feed has been refreshed.");
     } else {
       const body = (await response.json()) as { error?: string };
+      setMessageError(true);
       setMessage(body.error ?? "Could not save settings.");
     }
   };
@@ -78,8 +81,10 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
         preference,
       ]);
       setLabel("");
+      setMessageError(false);
       setMessage("Preference saved. Matching shows can now be watched automatically.");
     } else {
+      setMessageError(true);
       setMessage("Could not add preference.");
     }
   };
@@ -90,8 +95,10 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
     });
     if (response.ok) {
       setPreferences((current) => current.filter((item) => item.id !== id));
+      setMessageError(false);
       setMessage("Preference removed.");
     } else {
+      setMessageError(true);
       setMessage("Could not remove preference.");
     }
   };
@@ -100,21 +107,28 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
     if (!window.confirm("Delete your TicketDrop account and all subscriptions?")) return;
     const response = await fetch("/api/account", { method: "DELETE" });
     if (response.ok) await signOut({ callbackUrl: "/" });
-    else setMessage("Could not delete account.");
+    else {
+      setMessageError(true);
+      setMessage("Could not delete account.");
+    }
   };
 
   return (
-    <section className="grid gap-8 py-8 lg:grid-cols-2">
+    <section className="grid gap-12 pb-16 pt-10 sm:pt-16 lg:grid-cols-[1.08fr_0.92fr]">
       <div>
-        <h1 className="text-2xl font-semibold">Settings</h1>
-        <p className="mt-1 text-sm text-ink-400">Choose one metro enumerated by this deployment.</p>
-        <form onSubmit={save} className="mt-6 space-y-5 rounded-lg border border-ink-800 p-5">
+        <p className="eyebrow">Personalize</p>
+        <h1 className="page-title mt-5">Tune your signal.</h1>
+        <p className="mt-5 text-base leading-7 text-ink-400">
+          Choose one metro, shape discovery, and keep email reserved for events you actually
+          follow.
+        </p>
+        <form onSubmit={save} className="surface mt-8 space-y-6 rounded-2xl p-6 sm:p-8">
           <label className="block text-sm">
             <span className="text-ink-300">Metro</span>
             <select
               value={areaId}
               onChange={(event) => setAreaId(Number(event.target.value))}
-              className="mt-2 w-full rounded-md border border-ink-700 bg-ink-900 px-3 py-2"
+              className="field mt-2"
             >
               {areas.map((area) => (
                 <option key={area.id} value={area.id}>{area.name}</option>
@@ -133,7 +147,7 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
             </p>
             <span className="mt-1 block text-xs text-ink-400">Uses your verified sign-in address.</span>
           </div>
-          <fieldset className="space-y-4 border-t border-ink-800 pt-5">
+          <fieldset className="space-y-5 border-t border-white/[0.08] pt-6">
             <legend className="text-sm font-medium">Discovery feed</legend>
             <label className="flex items-start gap-3 text-sm">
               <input
@@ -157,7 +171,7 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
                 onChange={(event) => setDiscoveryGenres(event.target.value)}
                 placeholder="techno, house"
                 disabled={!discoveryEnabled}
-                className="mt-2 w-full rounded-md border border-ink-700 bg-ink-900 px-3 py-2 disabled:opacity-50"
+                className="field mt-2"
               />
               <span className="mt-1 block text-xs text-ink-400">
                 Comma-separated exact RA genre labels, up to eight.
@@ -175,7 +189,7 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
                   onChange={(event) => setDiscoveryMaxPrice(event.target.value)}
                   placeholder="No limit"
                   disabled={!discoveryEnabled}
-                  className="mt-2 w-full rounded-md border border-ink-700 bg-ink-900 px-3 py-2 disabled:opacity-50"
+                  className="field mt-2"
                 />
               </label>
               <label className="block text-sm">
@@ -184,7 +198,7 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
                   value={discoveryCurrency}
                   onChange={(event) => setDiscoveryCurrency(event.target.value)}
                   disabled={!discoveryEnabled}
-                  className="mt-2 rounded-md border border-ink-700 bg-ink-900 px-3 py-2 disabled:opacity-50"
+                  className="field mt-2"
                 >
                   <option value="USD">USD</option>
                   <option value="GBP">GBP</option>
@@ -199,7 +213,7 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
           </fieldset>
           <button
             disabled={areas.length === 0}
-            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="button-primary disabled:opacity-50"
           >
             Save settings
           </button>
@@ -211,15 +225,16 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
         </form>
       </div>
       <div>
-        <h2 className="text-lg font-semibold">Followed names</h2>
-        <p className="mt-1 text-sm text-ink-400">
+        <p className="eyebrow">Alert rules</p>
+        <h2 className="mt-5 text-3xl font-medium tracking-[-0.04em]">Exact follows</h2>
+        <p className="mt-3 text-sm leading-6 text-ink-400">
           Exact artist or venue names automatically create shared event watches.
         </p>
-        <form onSubmit={addPreference} className="mt-6 flex gap-2">
+        <form onSubmit={addPreference} className="surface mt-8 flex gap-2 rounded-2xl p-2">
           <select
             value={kind}
             onChange={(event) => setKind(event.target.value)}
-            className="rounded-md border border-ink-700 bg-ink-900 px-3 py-2 text-sm"
+            className="field w-28 border-0 bg-transparent text-sm"
           >
             <option value="artist">Artist</option>
             <option value="venue">Venue</option>
@@ -228,11 +243,11 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
             value={label}
             onChange={(event) => setLabel(event.target.value)}
             placeholder="e.g. Prospa"
-            className="min-w-0 flex-1 rounded-md border border-ink-700 bg-ink-900 px-3 py-2 text-sm"
+            className="field min-w-0 flex-1 border-0 bg-transparent text-sm"
           />
-          <button className="rounded-md border border-accent px-3 py-2 text-sm text-accent">Add</button>
+          <button className="button-primary min-h-11">Add</button>
         </form>
-        <ul className="mt-4 divide-y divide-ink-800 rounded-lg border border-ink-800">
+        <ul className="surface mt-4 divide-y divide-white/[0.07] overflow-hidden rounded-2xl">
           {preferences.length === 0 ? (
             <li className="p-4 text-sm text-ink-400">No preferences yet.</li>
           ) : (
@@ -251,7 +266,12 @@ export function UserSettings({ initial, email, preferences: initialPreferences, 
             ))
           )}
         </ul>
-        <p role="status" className="mt-4 min-h-5 text-sm text-ink-300">{message}</p>
+        <p
+          role={messageError ? "alert" : "status"}
+          className={`mt-4 min-h-5 text-sm ${messageError ? "text-danger" : "text-ink-300"}`}
+        >
+          {message}
+        </p>
         <div className="mt-8 border-t border-ink-800 pt-5">
           <h2 className="text-sm font-semibold">Account data</h2>
           <div className="mt-3 flex gap-3">

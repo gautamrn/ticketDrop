@@ -36,7 +36,7 @@ export function HealthBar() {
   );
 
   return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-ink-800 bg-ink-900/60 px-4 py-3">
+    <div className="surface flex flex-wrap items-center gap-x-5 gap-y-2 rounded-2xl px-5 py-4">
       <Dot ok={health?.redis} label="redis" />
       <Dot ok={health?.postgres} label="postgres" />
 
@@ -83,10 +83,11 @@ export function HealthBar() {
 
 function Dot({ ok, label }: { ok?: boolean; label: string }) {
   const tone = ok === undefined ? "bg-ink-600" : ok ? "bg-signal" : "bg-danger";
+  const status = ok === undefined ? "checking" : ok ? "online" : "offline";
   return (
     <span className="flex items-center gap-1.5 text-[11px] text-ink-300">
-      <span className={`h-1.5 w-1.5 rounded-full ${tone}`} />
-      {label}
+      <span className={`h-1.5 w-1.5 rounded-full ${tone}`} aria-hidden="true" />
+      {label} <span className="text-ink-400">{status}</span>
     </span>
   );
 }

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { auth } from "@/auth";
 import { query } from "@/lib/db";
 import { DemoReplayButton } from "@/components/DemoReplayButton";
+import { ArrowUpRight } from "@/components/ui";
 
 export default async function AppHome() {
   const session = await auth();
@@ -38,37 +39,68 @@ export default async function AppHome() {
   );
 
   return (
-    <section className="py-8">
-      <p className="text-sm text-ink-400">Welcome back, {session!.user.name ?? "listener"}.</p>
-      <h1 className="mt-1 text-3xl font-semibold">Your watch desk</h1>
-      <div className="mt-6 grid gap-3 sm:grid-cols-3">
+    <section className="pb-16 pt-10 sm:pt-16">
+      <div className="grid items-end gap-8 lg:grid-cols-[1fr_auto]">
+        <div>
+          <p className="eyebrow">Your signal desk</p>
+          <h1 className="page-title mt-5 max-w-3xl">Your nights, in one place.</h1>
+          <p className="mt-4 max-w-xl text-base leading-7 text-ink-400">
+            Detroit&apos;s live catalogue is being matched against your follows and discovery
+            profile.
+          </p>
+        </div>
+        <Link href="/app/discover" className="button-primary gap-2">
+          Explore tonight
+          <ArrowUpRight />
+        </Link>
+      </div>
+
+      <div className="mt-14 flex flex-wrap gap-x-12 gap-y-6 border-y border-white/[0.08] py-7">
         {[
           ["Active watches", stats?.watches ?? 0],
-          ["Onsale signals", stats?.alerts ?? 0],
-          ["Emails sent", stats?.sent ?? 0],
+          ["Signals recorded", stats?.alerts ?? 0],
+          ["Emails delivered", stats?.sent ?? 0],
         ].map(([label, value]) => (
-          <div key={label} className="rounded-lg border border-ink-800 bg-ink-900 p-4">
-            <p className="text-2xl font-semibold">{value}</p>
+          <div key={label} className="min-w-36">
+            <p className="text-3xl font-medium tracking-[-0.04em]">{value}</p>
             <p className="mt-1 text-xs text-ink-400">{label}</p>
           </div>
         ))}
+        <div className="ml-auto hidden items-center gap-2 text-xs text-ink-400 sm:flex">
+          <span className="h-1.5 w-1.5 rounded-full bg-ink-600" />
+          First observation stays silent
+        </div>
       </div>
+
       {process.env.PUBLIC_DEMO_MODE === "true" && <DemoReplayButton />}
-      <div className="mt-8 flex items-baseline justify-between">
-        <h2 className="text-lg font-semibold">Recent alerts</h2>
-        <Link href="/app/alerts" className="text-xs text-accent">View all</Link>
+
+      <div className="mt-12 flex items-baseline justify-between">
+        <div>
+          <p className="eyebrow">History</p>
+          <h2 className="mt-2 text-2xl font-medium tracking-[-0.03em]">Recent onsale signals</h2>
+        </div>
+        <Link href="/app/alerts" className="text-sm text-ink-300 hover:text-ink-100">
+          View all
+        </Link>
       </div>
-      <div className="mt-3 divide-y divide-ink-800 rounded-lg border border-ink-800">
+      <div className="surface mt-5 divide-y divide-white/[0.07] overflow-hidden rounded-2xl">
         {recent.length === 0 ? (
-          <div className="p-6">
-            <p className="text-sm text-ink-300">No onsale signals yet.</p>
-            <Link href="/app/events" className="mt-2 inline-block text-sm text-accent">
-              Browse events to watch
+          <div className="flex flex-col items-start gap-4 p-8 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-base font-medium">No onsale signals yet</p>
+              <p className="mt-1 text-sm text-ink-400">
+                First observations establish quiet baselines, so you never get a false cold-start
+                alert.
+              </p>
+            </div>
+            <Link href="/app/events" className="button-secondary shrink-0">
+              Browse events
             </Link>
           </div>
         ) : (
           recent.map((alert) => (
-            <div key={alert.drop_id} className="flex items-center gap-4 p-4">
+            <div key={alert.drop_id} className="flex items-center gap-5 p-5 sm:px-6">
+              <span className="signal-dot h-2 w-2 shrink-0 rounded-full bg-signal" />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{alert.title}</p>
                 <p className="mt-1 text-xs text-ink-400">
@@ -76,6 +108,9 @@ export default async function AppHome() {
                   {new Date(alert.detected_at).toLocaleString()}
                 </p>
               </div>
+              <span className="hidden rounded-full border border-white/10 px-2.5 py-1 text-[10px] uppercase tracking-wider text-ink-400 sm:inline-flex">
+                audited
+              </span>
             </div>
           ))
         )}

@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { HealthBar } from "@/components/HealthBar";
 import { OperatorDrops } from "@/components/OperatorDrops";
 import { OperatorWatchlist } from "@/components/OperatorWatchlist";
+import { Brand } from "@/components/ui";
 
 export default async function AdminPage() {
   const session = await auth();
@@ -10,15 +11,16 @@ export default async function AdminPage() {
   if (session.user.role !== "operator") redirect("/app");
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-[1600px] flex-col gap-3 p-4">
-      <header className="flex flex-wrap items-baseline justify-between gap-2">
+    <main className="mx-auto flex min-h-screen max-w-[1600px] flex-col gap-4 p-4 sm:p-6">
+      <header className="flex flex-wrap items-center justify-between gap-4 border-b border-white/[0.07] pb-5">
         <div>
-          <h1 className="text-lg font-semibold tracking-tight">TicketDrop operations</h1>
-          <p className="text-xs text-ink-400">
+          <Brand />
+          <h1 className="mt-4 text-2xl font-medium tracking-[-0.035em]">Operations</h1>
+          <p className="mt-1 text-xs text-ink-400">
             Postgres-backed onsale signals, health counts, and shared-watch controls.
           </p>
         </div>
-        <a href="/app" className="text-xs text-accent hover:underline">
+        <a href="/app" className="button-secondary min-h-10 text-xs">
           User app
         </a>
       </header>

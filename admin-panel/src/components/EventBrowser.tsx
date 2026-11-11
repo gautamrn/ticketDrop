@@ -23,6 +23,7 @@ export function EventBrowser({ initialArea }: { initialArea?: number | null }) {
   const [area, setArea] = useState(initialArea ? String(initialArea) : "");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -56,43 +57,50 @@ export function EventBrowser({ initialArea }: { initialArea?: number | null }) {
   };
 
   const toggle = async (row: EventRow) => {
-    const response = await fetch(
-      row.watched ? `/api/subscriptions?eventId=${encodeURIComponent(row.id)}` : "/api/subscriptions",
-      {
-        method: row.watched ? "DELETE" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: row.watched ? undefined : JSON.stringify({ eventId: row.id }),
-      },
-    );
-    if (!response.ok) {
-      const body = (await response.json()) as { error?: string };
-      setError(body.error ?? "Could not update watch");
-      return;
+    if (busyId) return;
+    setBusyId(row.id);
+    try {
+      const response = await fetch(
+        row.watched ? `/api/subscriptions?eventId=${encodeURIComponent(row.id)}` : "/api/subscriptions",
+        {
+          method: row.watched ? "DELETE" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: row.watched ? undefined : JSON.stringify({ eventId: row.id }),
+        },
+      );
+      if (!response.ok) {
+        const body = (await response.json()) as { error?: string };
+        setError(body.error ?? "Could not update watch");
+        return;
+      }
+      setEvents((current) =>
+        current.map((item) =>
+          item.id === row.id
+            ? {
+                ...item,
+                watched: !item.watched,
+                subscription_origin: item.watched ? null : "explicit",
+              }
+            : item,
+        ),
+      );
+    } finally {
+      setBusyId(null);
     }
-    setEvents((current) =>
-      current.map((item) =>
-        item.id === row.id
-          ? {
-              ...item,
-              watched: !item.watched,
-              subscription_origin: item.watched ? null : "explicit",
-            }
-          : item,
-      ),
-    );
   };
 
   return (
-    <section className="py-8">
+    <section className="pb-16 pt-10 sm:pt-16">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">Upcoming RA events</h1>
-          <p className="mt-1 text-sm text-ink-400">
-            Watch up to 25 shows. Artist and venue matches are labeled scout; every subscriber
-            shares one source poll per show.
+          <p className="eyebrow">Live catalogue</p>
+          <h1 className="page-title mt-5">Every event. One source.</h1>
+          <p className="mt-5 max-w-2xl text-base leading-7 text-ink-400">
+            Search Resident Advisor directly and watch up to 25 shows. Every subscriber shares one
+            source poll per event.
           </p>
         </div>
-        <form onSubmit={submit} className="flex flex-wrap gap-2">
+        <form onSubmit={submit} className="surface flex flex-wrap gap-2 rounded-2xl p-2">
           <label className="sr-only" htmlFor="event-search">
             Search title, artist, or venue
           </label>
@@ -101,29 +109,29 @@ export function EventBrowser({ initialArea }: { initialArea?: number | null }) {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Artist, event, or venue"
-            className="rounded-md border border-ink-700 bg-ink-900 px-3 py-2 text-sm"
+            className="field min-w-64 border-0 bg-transparent text-sm"
           />
           <input
             aria-label="RA area id"
             value={area}
             onChange={(event) => setArea(event.target.value.replace(/\D/g, ""))}
             placeholder="Area id"
-            className="w-24 rounded-md border border-ink-700 bg-ink-900 px-3 py-2 text-sm"
+            className="field w-24 border-0 bg-transparent text-sm"
           />
-          <button className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white">
+          <button className="button-primary min-h-11">
             Search
           </button>
         </form>
       </div>
       {error && <p role="alert" className="mt-4 text-sm text-danger">{error}</p>}
-      <div className="mt-6 divide-y divide-ink-800 rounded-lg border border-ink-800">
+      <div className="surface mt-10 divide-y divide-white/[0.07] overflow-hidden rounded-2xl">
         {loading ? (
-          <p className="p-6 text-sm text-ink-400">Loading catalogue…</p>
+          <p className="p-8 text-sm text-ink-400">Loading catalogue…</p>
         ) : events.length === 0 ? (
-          <p className="p-6 text-sm text-ink-400">No matching RA events are in the catalogue yet.</p>
+          <p className="p-8 text-sm text-ink-400">No matching RA events are in the catalogue yet.</p>
         ) : (
           events.map((row) => (
-            <article key={row.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
+            <article key={row.id} className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:px-6">
               <div className="min-w-0 flex-1">
                 <h2 className="truncate font-medium">{row.title}</h2>
                 <p className="mt-1 truncate text-xs text-ink-400">
@@ -150,17 +158,21 @@ export function EventBrowser({ initialArea }: { initialArea?: number | null }) {
               <div className="flex items-center gap-3">
                 {row.cost && <span className="text-xs text-ink-400">{row.cost}</span>}
                 {row.watched && row.subscription_origin && (
-                  <span className="rounded bg-ink-800 px-2 py-1 text-[10px] uppercase text-ink-300">
+                  <span className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] uppercase tracking-wider text-ink-300">
                     {row.subscription_origin}
                   </span>
                 )}
                 <button
                   onClick={() => void toggle(row)}
-                  className={`rounded-md px-3 py-1.5 text-sm ${
-                    row.watched ? "border border-ink-600 text-ink-300" : "bg-accent text-white"
-                  }`}
+                  aria-pressed={row.watched}
+                  disabled={busyId !== null}
+                  className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+                    row.watched
+                      ? "border border-white/12 text-ink-300 hover:bg-white/[0.05]"
+                      : "bg-accent text-ink-950 hover:bg-[#e3ff8e]"
+                  } disabled:cursor-wait disabled:opacity-50`}
                 >
-                  {row.watched ? "Unwatch" : "Watch"}
+                  {busyId === row.id ? "Updating…" : row.watched ? "Unwatch" : "Watch"}
                 </button>
               </div>
             </article>

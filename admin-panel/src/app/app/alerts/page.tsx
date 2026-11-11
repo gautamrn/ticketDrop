@@ -34,36 +34,38 @@ export default async function AlertsPage() {
   );
 
   return (
-    <section className="py-8">
-      <h1 className="text-2xl font-semibold">Alert history</h1>
-      <p className="mt-1 text-sm text-ink-400">
+    <section className="pb-16 pt-10 sm:pt-16">
+      <p className="eyebrow">Audit trail</p>
+      <h1 className="page-title mt-5">Every signal, accounted for.</h1>
+      <p className="mt-5 max-w-2xl text-base leading-7 text-ink-400">
         Classified onsale signals and email delivery outcomes.
       </p>
-      <div className="mt-6 space-y-3" aria-live="polite">
+      <div className="mt-10 space-y-4" aria-live="polite">
         {alerts.length === 0 ? (
-          <p className="rounded-lg border border-ink-800 p-6 text-sm text-ink-400">
+          <p className="surface rounded-2xl p-8 text-sm leading-6 text-ink-400">
             No alerts yet. The first source observation is a baseline and never creates a false signal.
           </p>
         ) : (
           alerts.map((alert) => (
-            <article key={alert.drop_id} className="rounded-lg border border-ink-800 bg-ink-900 p-4">
+            <article key={alert.drop_id} className="surface rounded-2xl p-5 sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h2 className="font-medium">{alert.title}</h2>
+                <div className="flex gap-4">
+                  <span className="signal-dot mt-2 h-2 w-2 shrink-0 rounded-full bg-signal" />
+                  <div>
+                  <h2 className="text-lg font-medium tracking-[-0.02em]">{alert.title}</h2>
                   <p className="mt-1 text-xs text-ink-400">
                     {alert.change.replaceAll("_", " ")}
                     {alert.venue ? ` · ${alert.venue}` : ""}
                     {" · "}
                     {new Date(alert.detected_at).toLocaleString()}
                   </p>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="mt-1 text-xs text-ink-400">
-                    email {alert.delivery_status ?? "not queued"}
-                  </p>
-                </div>
+                <span className="rounded-full border border-white/10 px-3 py-1 text-[10px] uppercase tracking-wider text-ink-300">
+                  email {alert.delivery_status ?? "not queued"}
+                </span>
               </div>
-              <details className="mt-4 border-t border-ink-800 pt-3">
+              <details className="mt-5 border-t border-white/[0.07] pt-4">
                 <summary className="cursor-pointer text-xs text-ink-300">
                   Engineering details
                 </summary>
@@ -84,13 +86,13 @@ export default async function AlertsPage() {
                 </dl>
                 {alert.last_error && <p className="mt-3 text-xs text-danger">{alert.last_error}</p>}
               </details>
-              <div className="mt-4 flex gap-4 text-sm">
+              <div className="mt-5 flex gap-4 text-sm">
               {alert.content_url && (
                 <a
                   href={alert.content_url}
                   target="_blank"
                   rel="noreferrer"
-                  className="mt-4 inline-block text-sm text-accent"
+                  className="text-sm text-accent"
                 >
                   RA listing ↗
                 </a>

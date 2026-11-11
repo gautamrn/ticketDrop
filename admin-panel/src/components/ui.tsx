@@ -1,5 +1,30 @@
 import { STATE_TONE } from "@/lib/format";
 
+export function Brand({ compact = false }: { compact?: boolean }) {
+  return (
+    <span className="inline-flex items-center gap-2.5 font-semibold tracking-[-0.025em]">
+      <span className="relative grid h-7 w-7 place-items-center rounded-full border border-white/12 bg-white/[0.045]">
+        <span className="h-2.5 w-2.5 rounded-full bg-accent" />
+        <span className="absolute h-4.5 w-px rotate-45 bg-ink-950" />
+      </span>
+      {!compact && <span>TicketDrop</span>}
+    </span>
+  );
+}
+
+export function ArrowUpRight({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      fill="none"
+      className={`h-4 w-4 ${className}`}
+    >
+      <path d="M4 12 12 4M6 4h6v6" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
 export function Panel({
   title,
   subtitle,
@@ -15,9 +40,9 @@ export function Panel({
 }) {
   return (
     <section
-      className={`flex min-h-0 flex-col rounded-xl border border-ink-800 bg-ink-900/60 ${className}`}
+      className={`surface flex min-h-0 flex-col rounded-2xl ${className}`}
     >
-      <header className="flex items-baseline justify-between gap-3 border-b border-ink-800 px-4 py-3">
+      <header className="flex items-baseline justify-between gap-3 border-b border-white/[0.07] px-5 py-4">
         <div className="min-w-0">
           <h2 className="text-sm font-semibold tracking-wide text-ink-100">{title}</h2>
           {subtitle && <p className="mt-0.5 truncate text-xs text-ink-400">{subtitle}</p>}
@@ -33,7 +58,7 @@ export function StateBadge({ state }: { state?: string }) {
   const tone = STATE_TONE[state ?? ""] ?? "bg-ink-800 text-ink-300 ring-ink-700";
   return (
     <span
-      className={`inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wider ring-1 ring-inset ${tone}`}
+      className={`inline-flex shrink-0 items-center rounded-full px-2 py-1 text-[10px] font-semibold tracking-wider ring-1 ring-inset ${tone}`}
     >
       {state ?? "—"}
     </span>
@@ -58,7 +83,7 @@ export function Tag({
   return (
     <span
       title={title}
-      className={`inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${tones[tone]}`}
+      className={`inline-flex shrink-0 items-center rounded-full px-2 py-1 text-[10px] font-medium ring-1 ring-inset ${tones[tone]}`}
     >
       {children}
     </span>
@@ -122,7 +147,7 @@ export function Button({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`rounded border px-2 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${tones[tone]}`}
+      className={`rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${tones[tone]}`}
     >
       {children}
     </button>

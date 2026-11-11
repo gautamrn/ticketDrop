@@ -1,20 +1,24 @@
 @import "tailwindcss";
 
 @theme {
-  --color-ink-950: #08090c;
-  --color-ink-900: #0d0f14;
-  --color-ink-850: #12151c;
-  --color-ink-800: #171b24;
-  --color-ink-700: #232936;
-  --color-ink-600: #333b4d;
-  --color-ink-400: #6b7689;
-  --color-ink-300: #97a1b3;
-  --color-ink-100: #e4e8f0;
+  --color-ink-950: #050506;
+  --color-ink-900: #0a0a0c;
+  --color-ink-850: #101013;
+  --color-ink-800: #1b1b20;
+  --color-ink-700: #292930;
+  --color-ink-600: #3d3d47;
+  --color-ink-400: #8e8e99;
+  --color-ink-300: #b8b8c2;
+  --color-ink-100: #f4f4f5;
 
-  --color-signal: #4ade80;
-  --color-warn: #fbbf24;
-  --color-danger: #f87171;
-  --color-accent: #818cf8;
+  --color-signal: #8ee8a2;
+  --color-warn: #f2ca72;
+  --color-danger: #ff8a8a;
+  --color-accent: #d7f970;
+
+  --font-sans: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --font-mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", monospace;
 }
 
 html,
@@ -22,6 +26,147 @@ body {
   background: var(--color-ink-950);
   color: var(--color-ink-100);
   font-feature-settings: "tnum" 1, "cv02" 1;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-image:
+    radial-gradient(circle at 78% -10%, rgb(215 249 112 / 0.075), transparent 31rem),
+    radial-gradient(circle at -8% 28%, rgb(92 107 255 / 0.06), transparent 34rem);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: rgb(215 249 112 / 0.24);
+  color: var(--color-ink-100);
+}
+
+button,
+a,
+input,
+select,
+summary {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.site-shell {
+  margin-inline: auto;
+  width: min(100% - 2rem, 76rem);
+}
+
+.surface {
+  border: 1px solid rgb(255 255 255 / 0.08);
+  background: linear-gradient(145deg, rgb(255 255 255 / 0.045), rgb(255 255 255 / 0.018));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.035),
+    0 24px 80px rgb(0 0 0 / 0.24);
+  backdrop-filter: blur(24px);
+}
+
+.surface-raised {
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background: #0f0f12;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 18px 60px rgb(0 0 0 / 0.3);
+}
+
+.eyebrow {
+  font-size: 0.69rem;
+  font-weight: 650;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.display {
+  font-size: clamp(3.4rem, 9vw, 7.8rem);
+  font-weight: 620;
+  letter-spacing: -0.065em;
+  line-height: 0.88;
+}
+
+.page-title {
+  font-size: clamp(2.15rem, 5vw, 4.2rem);
+  font-weight: 610;
+  letter-spacing: -0.045em;
+  line-height: 0.98;
+}
+
+.button-primary,
+.button-secondary {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding-inline: 1.15rem;
+  font-size: 0.875rem;
+  font-weight: 650;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.button-primary {
+  background: var(--color-accent);
+  color: #101106;
+}
+
+.button-primary:hover {
+  background: #e3ff8e;
+  transform: translateY(-1px);
+}
+
+.button-secondary {
+  border: 1px solid rgb(255 255 255 / 0.14);
+  color: var(--color-ink-100);
+}
+
+.button-secondary:hover {
+  border-color: rgb(255 255 255 / 0.28);
+  background: rgb(255 255 255 / 0.055);
+}
+
+.field {
+  width: 100%;
+  min-height: 2.75rem;
+  border: 1px solid rgb(255 255 255 / 0.11);
+  border-radius: 0.8rem;
+  background: rgb(255 255 255 / 0.035);
+  padding: 0.65rem 0.8rem;
+  color: var(--color-ink-100);
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease;
+}
+
+.field:hover {
+  border-color: rgb(255 255 255 / 0.2);
+}
+
+.field:focus {
+  border-color: rgb(215 249 112 / 0.6);
+  background: rgb(255 255 255 / 0.055);
+}
+
+.field:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.signal-dot {
+  box-shadow: 0 0 0 4px rgb(142 232 162 / 0.1);
 }
 
 /* Feed rows arrive one at a time; without a cue the eye misses an insert at the
@@ -41,7 +186,34 @@ body {
   animation: flash-in 900ms ease-out;
 }
 
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.enter {
+  animation: enter 650ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .flash-in {
     animation: none;
   }

@@ -1,9 +1,18 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "TicketDrop — RA onsale signals",
-  description: "Audited Resident Advisor onsale signals for followed artists and venues.",
+  title: {
+    default: "TicketDrop — Catch the signal",
+    template: "%s — TicketDrop",
+  },
+  description:
+    "Personal Resident Advisor discovery and audited onsale alerts for the artists and venues you follow.",
+};
+
+export const viewport: Viewport = {
+  colorScheme: "dark",
+  themeColor: "#050506",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
