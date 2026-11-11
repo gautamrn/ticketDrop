@@ -107,14 +107,30 @@ export function DiscoveryFeed() {
       {profile?.enabled && (
         <div className="mt-10 flex flex-wrap items-center gap-2 border-y border-white/[0.07] py-5 text-xs text-ink-300">
           <span className="mr-2 text-ink-400">Matching</span>
-          {profile.areaName && <span className="rounded-full border border-white/10 px-3 py-1.5">{profile.areaName}</span>}
+          {profile.areaName && (
+            <Link
+              href="/app/settings"
+              className="rounded-full border border-white/10 px-3 py-1.5 transition-colors hover:border-white/25 hover:text-ink-100"
+            >
+              {profile.areaName}
+            </Link>
+          )}
           {profile.genres.map((genre) => (
-            <span key={genre} className="rounded-full border border-white/10 px-3 py-1.5">{genre}</span>
+            <Link
+              key={genre}
+              href="/app/settings"
+              className="rounded-full border border-white/10 px-3 py-1.5 transition-colors hover:border-white/25 hover:text-ink-100"
+            >
+              {genre}
+            </Link>
           ))}
           {profile.maxPrice !== null && (
-            <span className="rounded-full border border-white/10 px-3 py-1.5">
+            <Link
+              href="/app/settings"
+              className="rounded-full border border-white/10 px-3 py-1.5 transition-colors hover:border-white/25 hover:text-ink-100"
+            >
               ≤ {profile.maxPrice} {profile.currency}
-            </span>
+            </Link>
           )}
           {!loading && events.length > 0 && (
             <span className="ml-auto text-ink-400">{events.length} current matches</span>
@@ -144,8 +160,20 @@ export function DiscoveryFeed() {
           </div>
         ) : (
           events.map((row, index) => (
-            <article key={row.id} className="surface group flex min-h-72 flex-col rounded-2xl p-6 sm:p-7">
-              <div className="flex flex-wrap gap-2">
+            <article
+              key={row.id}
+              className="surface group relative flex min-h-72 flex-col rounded-2xl p-6 transition-colors hover:border-white/[0.18] sm:p-7"
+            >
+              {row.content_url && (
+                <a
+                  href={row.content_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Open ${row.title} on Resident Advisor`}
+                  className="absolute inset-0 rounded-2xl"
+                />
+              )}
+              <div className="pointer-events-none relative z-10 flex flex-wrap gap-2">
                 {row.match_reasons.map((reason) => (
                   <span key={reason} className="rounded-full border border-signal/15 bg-signal/[0.06] px-2.5 py-1 text-[11px] text-signal">
                     {reason}
@@ -155,15 +183,19 @@ export function DiscoveryFeed() {
                   {String(index + 1).padStart(2, "0")}
                 </span>
               </div>
-              <h2 className="mt-8 text-xl font-medium tracking-[-0.025em]">{row.title}</h2>
-              <p className="mt-2 text-xs leading-5 text-ink-400">
+              <h2 className="pointer-events-none relative z-10 mt-8 text-xl font-medium tracking-[-0.025em]">
+                {row.title}
+              </h2>
+              <p className="pointer-events-none relative z-10 mt-2 text-xs leading-5 text-ink-400">
                 {row.starts_at ? new Date(row.starts_at).toLocaleString() : "Date unavailable"}
                 {row.venue ? ` · ${row.venue}` : ""}
               </p>
               {row.artists.length > 0 && (
-                <p className="mt-2 text-sm text-ink-300">{row.artists.join(", ")}</p>
+                <p className="pointer-events-none relative z-10 mt-2 text-sm text-ink-300">
+                  {row.artists.join(", ")}
+                </p>
               )}
-              <div className="mt-auto flex flex-wrap items-center gap-3 pt-5 text-xs">
+              <div className="relative z-10 mt-auto flex flex-wrap items-center gap-3 pt-5 text-xs">
                 {row.cost && <span className="text-ink-300">{row.cost}</span>}
                 {row.content_url && (
                   <a href={row.content_url} target="_blank" rel="noreferrer" className="text-accent">

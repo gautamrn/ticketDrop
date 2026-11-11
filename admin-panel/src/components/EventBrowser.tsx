@@ -131,8 +131,20 @@ export function EventBrowser({ initialArea }: { initialArea?: number | null }) {
           <p className="p-8 text-sm text-ink-400">No matching RA events are in the catalogue yet.</p>
         ) : (
           events.map((row) => (
-            <article key={row.id} className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:px-6">
-              <div className="min-w-0 flex-1">
+            <article
+              key={row.id}
+              className="relative flex flex-col gap-4 p-5 transition-colors hover:bg-white/[0.035] sm:flex-row sm:items-center sm:px-6"
+            >
+              {row.content_url && (
+                <a
+                  href={row.content_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Open ${row.title} on Resident Advisor`}
+                  className="absolute inset-0"
+                />
+              )}
+              <div className="pointer-events-none relative z-10 min-w-0 flex-1">
                 <h2 className="truncate font-medium">{row.title}</h2>
                 <p className="mt-1 truncate text-xs text-ink-400">
                   {row.starts_at ? new Date(row.starts_at).toLocaleString() : "Date unavailable"}
@@ -144,18 +156,18 @@ export function EventBrowser({ initialArea }: { initialArea?: number | null }) {
                 )}
                 <div className="mt-2 flex gap-3 text-xs">
                   {row.content_url && (
-                    <a href={row.content_url} target="_blank" rel="noreferrer" className="text-accent">
+                    <a href={row.content_url} target="_blank" rel="noreferrer" className="pointer-events-auto text-accent">
                       RA listing ↗
                     </a>
                   )}
                   {row.ticket_link && (
-                    <a href={row.ticket_link} target="_blank" rel="noreferrer" className="text-accent">
+                    <a href={row.ticket_link} target="_blank" rel="noreferrer" className="pointer-events-auto text-accent">
                       Seller ↗
                     </a>
                   )}
                 </div>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="relative z-10 flex items-center gap-3">
                 {row.cost && <span className="text-xs text-ink-400">{row.cost}</span>}
                 {row.watched && row.subscription_origin && (
                   <span className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] uppercase tracking-wider text-ink-300">

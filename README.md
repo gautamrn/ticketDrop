@@ -5,8 +5,6 @@ Personal event discovery and audited Resident Advisor onsale alerts.
 [![CI](https://github.com/gautamrn/ticketDrop/actions/workflows/ci.yml/badge.svg)](https://github.com/gautamrn/ticketDrop/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-![TicketDrop discovery feed](./docs/screenshots/discovery.png)
-
 ## What it does
 
 - Discovers upcoming events by metro, exact RA genre, and optional price.
@@ -19,7 +17,11 @@ match, so broad preferences cannot create an alert storm.
 
 <p>
   <img src="./docs/screenshots/landing.png" alt="TicketDrop landing page" width="49%">
+  <img src="./docs/screenshots/discovery.png" alt="TicketDrop discovery feed" width="49%">
+</p>
+<p>
   <img src="./docs/screenshots/dashboard.png" alt="TicketDrop personal dashboard" width="49%">
+  <img src="./docs/screenshots/events.png" alt="TicketDrop live event catalogue" width="49%">
 </p>
 
 ## Why it is technically interesting

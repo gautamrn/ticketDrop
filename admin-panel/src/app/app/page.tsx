@@ -57,14 +57,20 @@ export default async function AppHome() {
 
       <div className="mt-14 flex flex-wrap gap-x-12 gap-y-6 border-y border-white/[0.08] py-7">
         {[
-          ["Active watches", stats?.watches ?? 0],
-          ["Signals recorded", stats?.alerts ?? 0],
-          ["Emails delivered", stats?.sent ?? 0],
-        ].map(([label, value]) => (
-          <div key={label} className="min-w-36">
+          ["Active watches", stats?.watches ?? 0, "/app/events"],
+          ["Signals recorded", stats?.alerts ?? 0, "/app/alerts"],
+          ["Emails delivered", stats?.sent ?? 0, "/app/alerts"],
+        ].map(([label, value, href]) => (
+          <Link
+            key={label}
+            href={String(href)}
+            className="group min-w-36 rounded-lg py-1 focus-visible:outline-offset-4"
+          >
             <p className="text-3xl font-medium tracking-[-0.04em]">{value}</p>
-            <p className="mt-1 text-xs text-ink-400">{label}</p>
-          </div>
+            <p className="mt-1 text-xs text-ink-400 transition-colors group-hover:text-ink-100">
+              {label} <span aria-hidden="true">↗</span>
+            </p>
+          </Link>
         ))}
         <div className="ml-auto hidden items-center gap-2 text-xs text-ink-400 sm:flex">
           <span className="h-1.5 w-1.5 rounded-full bg-ink-600" />
@@ -99,7 +105,11 @@ export default async function AppHome() {
           </div>
         ) : (
           recent.map((alert) => (
-            <div key={alert.drop_id} className="flex items-center gap-5 p-5 sm:px-6">
+            <Link
+              key={alert.drop_id}
+              href="/app/alerts"
+              className="flex items-center gap-5 p-5 transition-colors hover:bg-white/[0.035] sm:px-6"
+            >
               <span className="signal-dot h-2 w-2 shrink-0 rounded-full bg-signal" />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{alert.title}</p>
@@ -111,7 +121,7 @@ export default async function AppHome() {
               <span className="hidden rounded-full border border-white/10 px-2.5 py-1 text-[10px] uppercase tracking-wider text-ink-400 sm:inline-flex">
                 audited
               </span>
-            </div>
+            </Link>
           ))
         )}
       </div>
