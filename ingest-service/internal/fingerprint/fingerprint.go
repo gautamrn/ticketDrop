@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"strconv"
 	"strings"
+	"time"
 
 	"ticketdrop/ingest/internal/source"
 )
@@ -55,7 +56,10 @@ func Compute(s source.Snapshot) string {
 		strings.ToUpper(strings.TrimSpace(s.EventStatus)),
 	)
 	if s.DateUpdated != nil {
-		write(s.DateUpdated.UTC().Format("2006-01-02T15:04:05Z"))
+		// RA and the mock both expose millisecond precision. Truncating to a
+		// whole second makes two real upstream edits within that second hash
+		// identically, so the later observation never reaches classification.
+		write(s.DateUpdated.UTC().Format(time.RFC3339Nano))
 	} else {
 		write("")
 	}

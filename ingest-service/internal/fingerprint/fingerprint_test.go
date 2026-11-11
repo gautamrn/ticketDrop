@@ -100,6 +100,20 @@ func TestComputeNoFieldBoundaryCollision(t *testing.T) {
 	}
 }
 
+func TestComputePreservesSubsecondDateUpdated(t *testing.T) {
+	first := time.Date(2026, 11, 11, 5, 17, 48, 11_000_000, time.UTC)
+	second := time.Date(2026, 11, 11, 5, 17, 48, 527_000_000, time.UTC)
+
+	before := base()
+	before.DateUpdated = &first
+	after := before
+	after.DateUpdated = &second
+
+	if Compute(before) == Compute(after) {
+		t.Fatal("subsecond dateUpdated change did not change the fingerprint")
+	}
+}
+
 func TestClassify(t *testing.T) {
 	tests := []struct {
 		name       string
