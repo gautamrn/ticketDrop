@@ -44,7 +44,11 @@ async def build(cfg: Config) -> Runtime:
     )
     await bus.ping()
     email_client: EmailClient = (
-        ResendClient(cfg.resend_api_key, cfg.alert_from_email)
+        ResendClient(
+            cfg.resend_api_key,
+            cfg.alert_from_email,
+            base_url=cfg.email_api_base_url,
+        )
         if cfg.resend_api_key
         else LogEmailClient()
     )

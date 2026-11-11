@@ -60,6 +60,11 @@ make an external side effect atomic with `XACK`. Durable protection is:
 - unique `(drop_id, user_id, channel)` on deliveries;
 - the same `drop-<drop_id>-user-<user_id>-email` provider key on every retry.
 
+This does not currently guarantee application-level completion. The executed
+worker-kill benchmark found that reclaim can raise the delivery count to the
+dead-letter ceiling before a stale claim expires; see
+[`docs/load-test.md`](../docs/load-test.md).
+
 One subscriber failure is isolated to that delivery row and does not suppress
 other subscribers.
 

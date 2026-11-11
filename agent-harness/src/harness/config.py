@@ -38,6 +38,7 @@ class Config:
     scout_interval_ms: int = 60_000
     scout_timeout_ms: int = 5_000
     resend_api_key: str = ""
+    email_api_base_url: str = "https://api.resend.com"
     alert_from_email: str = "TicketDrop <alerts@example.com>"
     app_base_url: str = "http://localhost:3000"
     unsubscribe_secret: str = "development-only-change-me"
@@ -75,6 +76,7 @@ def load(env: dict[str, str] | None = None) -> Config:
         scout_interval_ms=max(5_000, _int(env, "SCOUT_INTERVAL_MS", 60_000)),
         scout_timeout_ms=max(1_000, _int(env, "SCOUT_TIMEOUT_MS", 5_000)),
         resend_api_key=_str(env, "RESEND_API_KEY", ""),
+        email_api_base_url=_str(env, "EMAIL_API_BASE_URL", "https://api.resend.com").rstrip("/"),
         alert_from_email=_str(env, "ALERT_FROM_EMAIL", "TicketDrop <alerts@example.com>"),
         app_base_url=_str(env, "APP_BASE_URL", "http://localhost:3000").rstrip("/"),
         unsubscribe_secret=_str(env, "UNSUBSCRIBE_SECRET", "development-only-change-me"),

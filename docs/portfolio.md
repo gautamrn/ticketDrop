@@ -34,7 +34,9 @@ subscription reaches the poller.
 Redis consumer groups recover work after a process failure, but cannot atomically
 commit Postgres and email with `XACK`. TicketDrop accepts redelivery and makes
 side effects idempotent with unique drop and delivery keys plus a stable
-provider key on retries.
+provider key on retries. The transport is at least once; the application cannot
+yet make the same unconditional claim because a measured reclaim/dead-letter
+race lost alerts under one worker-kill timing.
 
 ### Coarse but honest signals
 
@@ -57,7 +59,8 @@ boundary and a scope boundary.
 - Next.js lint, type checking, and production build run in CI.
 - The container product smoke starts with a fresh schema and verifies silent
   baseline, automatic subscription, one classified drop, and one email.
-- Performance results separate poll delay from stream-to-email latency.
+- The repeatable load report includes raw output, increasing source rates, and
+  repeated worker-kill evidence.
 
 ## Known limits
 
@@ -71,11 +74,15 @@ boundary and a scope boundary.
 
 - Built a multi-user RA onsale-signal system in Go, Python, and Next.js with a
   shared watchlist that keeps source load proportional to unique events.
-- Designed at-least-once Redis processing with Postgres and email-provider
-  idempotency to prevent duplicate alerts after worker failure.
+- Sustained 39.46 classified drops/s at a 40 events/s source rate on a
+  documented laptop run, with 299.5 ms p50 and 816.8 ms p99
+  mutation-to-stream latency.
+- Prevented duplicate accepted alerts in repeated 600-event worker-kill runs
+  with Postgres and provider idempotency; also identified a reclaim/dead-letter
+  race that caused three missing alerts in one run.
 - Implemented authenticated direct artist/venue preferences, audited email
   fan-out, bounded retries, production containers, and contract-faithful smoke
   tests.
 
-Add tested throughput and latency percentiles only from a dated report whose
-workload and measurement boundaries are stated.
+Source and measurement boundaries:
+[`docs/load-test.md`](./load-test.md).

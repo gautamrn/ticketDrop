@@ -43,10 +43,17 @@ class EmailClient(Protocol):
 
 
 class ResendClient:
-    def __init__(self, api_key: str, from_email: str, *, timeout_s: float = 5.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        from_email: str,
+        *,
+        base_url: str = "https://api.resend.com",
+        timeout_s: float = 5.0,
+    ) -> None:
         self._from = from_email
         self._client = httpx.AsyncClient(
-            base_url="https://api.resend.com",
+            base_url=base_url,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout_s,
         )

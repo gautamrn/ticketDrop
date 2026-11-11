@@ -175,7 +175,10 @@ Go tests stay table-driven. Fingerprint tests stay, including "attending is not 
 6. Assert one drop, four is no longer the expected transition count. Assert one `NOTIFIED` drop, one transition recording the classified change, and one `sent` delivery.
 7. Run the presale mutation again and assert the delivery count is still 1.
 
-Re-run `scripts/load_test.py` only after the worker is simplified. Replace `docs/performance.md`. The previous 100-drop result (p50 1.70 s, p95 2.67 s, p99 2.84 s, 4 workers, log email, WSL2) measured the deleted scoring pipeline and must not be cited.
+Use `docker-compose.load.yml` and `go run ./cmd/loadtest` from
+`ingest-service/`. The executed RA-only results and raw output are in
+`docs/load-test.md`; results from the deleted scoring pipeline must not be
+cited.
 
 ## Docs the next editor must leave true
 

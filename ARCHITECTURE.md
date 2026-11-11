@@ -83,6 +83,15 @@ The Redis claim is an optimization, not the durable correctness boundary.
 Redis loss can repeat work; Postgres uniqueness and provider idempotency prevent
 a second drop row or intentional second email.
 
+The worker-kill load test found a remaining completion bug: `XAUTOCLAIM`
+increments the delivery count while a dead worker's short-lived claim still
+exists, but the worker checks the delivery ceiling before the claim. Depending
+on kill timing, an entry can therefore be dead-lettered before the claim
+expires. Provider idempotency prevented duplicate accepted alerts in the
+measured runs, but one run lost three alerts; until this ordering is fixed,
+at-least-once describes Redis transport delivery rather than guaranteed
+application completion.
+
 ## Latency
 
 Production starts with a 5-second RA poll interval, six workers, and one metro.

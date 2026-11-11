@@ -18,6 +18,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -80,6 +81,11 @@ func main() {
 	s := &server{events: map[string]*event{}}
 	s.seed()
 
+	log.Printf("mock ra listening on %s (%d events)", *addr, len(s.order))
+	log.Fatal(http.ListenAndServe(*addr, s.routes()))
+}
+
+func (s *server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", s.handleGraphQL)
 	mux.HandleFunc("/admin/presale", s.mutate(func(e *event) {
@@ -93,9 +99,9 @@ func main() {
 		// Touches only dateUpdated: the fingerprint moves but nothing
 		// classifies, which is the case that must NOT produce a drop.
 	}))
-
-	log.Printf("mock ra listening on %s (%d events)", *addr, len(s.order))
-	log.Fatal(http.ListenAndServe(*addr, mux))
+	mux.HandleFunc("/admin/load/events", s.createLoadEvents)
+	mux.HandleFunc("/admin/load/reset", s.resetLoadEvents)
+	return mux
 }
 
 func (s *server) handleGraphQL(w http.ResponseWriter, r *http.Request) {
@@ -164,10 +170,111 @@ func (s *server) mutate(apply func(*event)) http.HandlerFunc {
 		}
 		apply(e)
 		// Any real edit on RA bumps dateUpdated, so the double must too.
-		e.DateUpdated = time.Now().UTC().Format("2006-01-02T15:04:05.000")
+		changedAt := time.Now().UTC()
+		e.DateUpdated = changedAt.Format("2006-01-02T15:04:05.000")
 		log.Printf("mutated %s: ticketed=%v presale=%v resale=%v",
 			id, e.IsTicketed, deref(e.PresaleStatus), e.ResaleActive)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "id": id, "changed_at": changedAt.Format(time.RFC3339Nano),
+		})
+	}
+}
+
+// createLoadEvents adds deterministic, initially unticketed events. They still
+// follow the normal catalogue and snapshot paths; the endpoint only makes a
+// repeatable source workload possible without hard-coding thousands of rows.
+func (s *server) createLoadEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
+	count, err := strconv.Atoi(r.URL.Query().Get("count"))
+	if !validLoadPrefix(prefix) || err != nil || count < 1 || count > 10_000 {
+		http.Error(w, "prefix must be alphanumeric/dash and count must be 1..10000",
+			http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	created := 0
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("%s-%05d", prefix, i)
+		if _, exists := s.events[id]; exists {
+			continue
+		}
+		s.events[id] = loadEvent(id, i)
+		s.order = append(s.order, id)
+		created++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"prefix": prefix, "requested": count, "created": created,
+	})
+}
+
+func (s *server) resetLoadEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
+	if !validLoadPrefix(prefix) {
+		http.Error(w, "prefix must be alphanumeric/dash", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.order[:0]
+	removed := 0
+	for _, id := range s.order {
+		if strings.HasPrefix(id, prefix+"-") {
+			delete(s.events, id)
+			removed++
+			continue
+		}
+		kept = append(kept, id)
+	}
+	s.order = kept
+	writeJSON(w, http.StatusOK, map[string]any{"prefix": prefix, "removed": removed})
+}
+
+func validLoadPrefix(prefix string) bool {
+	if prefix == "" || len(prefix) > 40 {
+		return false
+	}
+	for _, r := range prefix {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') &&
+			(r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func loadEvent(id string, index int) *event {
+	now := time.Now().UTC()
+	showDate := now.AddDate(0, 1, 0).Truncate(24 * time.Hour)
+	return &event{
+		ID: id, Title: "[Load] Event " + id,
+		Date:        showDate.Format("2006-01-02"),
+		StartTime:   showDate.Add(22 * time.Hour).Format("2006-01-02T15:04:05.000"),
+		ContentURL:  "/events/" + id,
+		IsTicketed:  false,
+		Status:      "LIVE",
+		DateUpdated: now.Add(-time.Hour).Format("2006-01-02T15:04:05.000"),
+		Venue: &venue{
+			ID: "load-venue", Name: "Load Test Venue",
+			ContentURL: "/clubs/load-venue",
+			Area:       &area{ID: "19", Name: "Detroit"},
+		},
+		Artists: []actor{{
+			ID: "load-artist", Name: "Load Test Artist",
+			ContentURL: "/dj/load-test-artist",
+		}},
+		Genres:    []genre{{Name: "techno"}},
+		Attending: 100 + index,
 	}
 }
 

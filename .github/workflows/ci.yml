@@ -40,8 +40,8 @@ jobs:
           cache: pip
           cache-dependency-path: agent-harness/pyproject.toml
       - run: python -m pip install -e ".[dev]"
-      - run: python -m ruff check src tests scripts
-      - run: python -m ruff format --check src tests scripts
+      - run: python -m ruff check src tests ../scripts
+      - run: python -m ruff format --check src tests ../scripts
       - run: python -m pytest -q
 
   admin:

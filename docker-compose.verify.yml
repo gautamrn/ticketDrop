@@ -115,24 +115,3 @@ services:
       - ./scripts/product_smoke.py:/verify/product_smoke.py:ro
     depends_on:
       harness: { condition: service_healthy }
-
-  benchmark:
-    profiles: ["benchmark"]
-    build: ./agent-harness
-    entrypoint:
-      [
-        "python",
-        "/verify/load_test.py",
-        "--count",
-        "100",
-        "--output",
-        "/output/performance.md",
-      ]
-    environment:
-      DATABASE_URL: postgres://ticketdrop:ticketdrop@postgres:5432/ticketdrop?sslmode=disable
-      REDIS_URL: redis://redis:6379/0
-    volumes:
-      - ./scripts/load_test.py:/verify/load_test.py:ro
-      - ./docs:/output
-    depends_on:
-      harness: { condition: service_healthy }

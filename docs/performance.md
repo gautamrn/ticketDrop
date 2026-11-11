@@ -1,8 +1,15 @@
 # Performance measurement
 
-There is no published benchmark for the current RA-only worker yet. Previous
-numbers measured a deleted processing path and are not evidence for this
-product.
+The executed RA-only benchmark and raw output are in
+[`load-test.md`](./load-test.md). Its largest measured phase sustained 39.46
+drops/s at 40 source mutations/s with 299.5 ms p50, 580.3 ms p95, and 816.8 ms
+p99 source-mutation-to-stream latency on the documented laptop.
+
+The worker-kill result is intentionally not summarized as an unconditional
+success. One run had zero missing alerts and five provider-deduplicated
+requests; another same-session run had three missing alerts after ten entries
+were dead-lettered. The raw outputs and failure hypothesis are preserved in the
+report.
 
 ## Two latency clocks
 
@@ -23,10 +30,17 @@ known mock mutation timestamp; do not infer it from stream timing.
 
 ## Required benchmark protocol
 
-Run `scripts/load_test.py` only against a fresh disposable environment using
-the current schema and worker. A published report must include:
+Run the Go harness only against the fresh disposable load profile:
 
-- date, commit, host OS, CPU, memory, Python version, and container limits;
+```powershell
+docker compose -p ticketdrop-load -f docker-compose.load.yml up -d --build
+cd ingest-service
+go run ./cmd/loadtest
+```
+
+A published report must include:
+
+- date, commit, host OS, CPU, memory, Go version, and container limits;
 - number of unique events, subscribers per event, messages, and load shape;
 - `HARNESS_MAX_CONCURRENCY`, email adapter, and provider behavior;
 - wall time, throughput, p50/p95/p99 stream-to-email latency, and sample count;

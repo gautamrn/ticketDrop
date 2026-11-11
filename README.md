@@ -12,8 +12,10 @@ Key properties:
 
 - The first observation is a silent baseline, not an alert.
 - Source traffic scales with unique watched events, not subscriber count.
-- Redis delivery is at least once; Postgres constraints and a stable email
-  idempotency key prevent duplicate side effects.
+- Redis transport is at least once; Postgres constraints and a stable email
+  idempotency key suppress duplicate side effects. A worker-kill load test also
+  exposed a reclaim/dead-letter race that can lose alerts, so the application
+  does not yet claim unconditional at-least-once completion.
 - Artist and venue preferences are normalized full-name matches. There is no
   fuzzy matching.
 - The product sends alerts only. It never navigates seller flows, waiting rooms,
@@ -27,6 +29,8 @@ RA catalogue → Go fingerprint/diff → Redis Stream → Python email fan-out
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the observable RA fields,
 idempotency model, latency definition, and failure modes.
+Executed throughput, latency, duplicate, and worker-kill results—with raw
+output—are in [docs/load-test.md](./docs/load-test.md).
 
 ![TicketDrop landing page](./docs/ticketdrop-landing.png)
 

@@ -1,0 +1,134 @@
+name: ticketdrop-load
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ticketdrop
+      POSTGRES_PASSWORD: ticketdrop
+      POSTGRES_DB: ticketdrop
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ticketdrop -d ticketdrop"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "no", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  mock-ra:
+    build:
+      context: ./ingest-service
+      target: build
+    working_dir: /src
+    command: ["/out/mock-ra", "-addr", ":8098"]
+    ports:
+      - "18098:8098"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-qO-",
+          "--post-data={\"query\":\"{__typename}\"}",
+          "--header=Content-Type: application/json",
+          "http://localhost:8098/graphql",
+        ]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  mock-email:
+    build: ./agent-harness
+    entrypoint: ["python", "/load/mock_email.py", "--port", "8099"]
+    volumes:
+      - ./scripts/mock_email.py:/load/mock_email.py:ro
+    ports:
+      - "18099:8099"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8099/healthz', timeout=2)",
+        ]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  ingest:
+    build: ./ingest-service
+    environment:
+      DATABASE_URL: postgres://ticketdrop:ticketdrop@postgres:5432/ticketdrop?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      RA_GRAPHQL_URL: http://mock-ra:8098/graphql
+      RA_USER_AGENT: TicketDrop-Load-Test/1.0
+      RA_AREAS: "19"
+      RA_ENUMERATE_INTERVAL_MS: "500"
+      RA_ENUMERATE_PAGE_SIZE: "5000"
+      POLL_INTERVAL_MS: "500"
+      POLL_TIMEOUT_MS: "2000"
+      RA_BATCH_SIZE: "2000"
+      RA_WORKERS: "64"
+      RA_QUEUE_SIZE: "5000"
+      INGEST_METRICS_PORT: "2112"
+      LOG_LEVEL: warn
+    ports:
+      - "12112:2112"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      mock-ra: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:2112/readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  harness:
+    build: ./agent-harness
+    environment:
+      DATABASE_URL: postgres://ticketdrop:ticketdrop@postgres:5432/ticketdrop?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      HARNESS_READ_BLOCK_MS: "500"
+      HARNESS_READ_BATCH: "128"
+      HARNESS_MAX_CONCURRENCY: "16"
+      HARNESS_AUTOCLAIM_MIN_IDLE_MS: "1000"
+      HARNESS_AUTOCLAIM_INTERVAL_MS: "1000"
+      HARNESS_MAX_DELIVERIES: "3"
+      HARNESS_CLAIM_TTL_S: "5"
+      RESEND_API_KEY: load-test-only
+      EMAIL_API_BASE_URL: http://mock-email:8099
+      ALERT_FROM_EMAIL: TicketDrop Load <load@local.invalid>
+      APP_BASE_URL: http://panel.invalid
+      UNSUBSCRIBE_SECRET: load-test-only
+      LOG_LEVEL: warn
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      mock-email: { condition: service_healthy }
+      ingest: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:2113/readyz', timeout=2)",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 30
