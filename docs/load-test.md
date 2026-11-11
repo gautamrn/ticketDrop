@@ -52,7 +52,13 @@ The harness was sent `SIGKILL` 15.001 seconds into the worker-kill phase and Doc
 
 This final run preserved all alerts, but an earlier same-session run of the same 20 events/s kill profile did not: it accepted 597 of 600 alerts, leaving 3 missing with 0 duplicate accepted alerts. Its post-run query found 10 drops failed by `delivery limit exceeded`: 6 had a `sent` delivery and 4 remained `sending` (590 other drops were `NOTIFIED` with `sent` delivery). The zero-duplicate assertion held in both runs, but application-level at-least-once delivery is therefore not reliable under this kill timing.
 
-The failure mechanism is supported by the code and run configuration: reclaim runs after 1 second, the claim TTL is 5 seconds, and the delivery ceiling is 3; `Worker.handle` checks the delivery ceiling before checking whether another worker's claim is still live. Depending on kill timing, reclaimed entries can reach the ceiling and be dead-lettered before the stale claim expires.
+At the commit measured here, reclaim ran after 1 second, the claim TTL was 5
+seconds, and the delivery ceiling was 3; `Worker.handle` checked the delivery
+ceiling before checking whether another worker's claim was still live. That
+ordering explained the three missing alerts. The worker now checks the claim
+and durable terminal state first, with deterministic regression coverage, but
+the load figures above remain historical and must not be presented as a
+post-fix worker-kill measurement.
 
 ## Bottleneck evidence
 

@@ -115,6 +115,28 @@ CREATE TABLE event_snapshots (
 CREATE INDEX event_snapshots_event_observed_idx
     ON event_snapshots (event_id, observed_at DESC);
 
+-- Go commits classified changes here in the same transaction as their
+-- snapshot. A dispatcher publishes them to Redis and marks them complete.
+-- Reusing `id` across publish retries lets the Python consumer deduplicate a
+-- crash after XADD but before `published_at` is recorded.
+CREATE TABLE ingest_outbox (
+    id             uuid PRIMARY KEY,
+    event_id       uuid NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+    fingerprint    text NOT NULL,
+    payload        jsonb NOT NULL,
+    attempts       integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    locked_until   timestamptz,
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    published_at   timestamptz,
+    last_error     text,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (event_id, fingerprint)
+);
+
+CREATE INDEX ingest_outbox_due_idx
+    ON ingest_outbox (next_attempt_at, created_at)
+    WHERE published_at IS NULL;
+
 -- A NULL state is in-flight. Only terminal outcomes are part of the state
 -- vocabulary; the old browser/scoring graph no longer exists.
 CREATE TABLE drops (

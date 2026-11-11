@@ -34,18 +34,21 @@ the classifier cannot explain is stored for audit and is not published.
 RA GraphQL
   │ enumerate catalogue + poll shared watchlist
   ▼
-Go ingest ── classified change ──▶ Redis Stream ticket:drops
-  │                                      │ consumer group
-  │ catalogue + snapshots                ▼
-  └──────────────────────────────▶ Python worker
+Go ingest ── snapshot + outbox ──▶ Postgres
+  │                                  │ stable drop ID
+  │ catalogue                        ▼
+  └──────────────────────▶ Redis Stream ticket:drops
+                                      │ consumer group
+                                      ▼
+                                  Python worker
                                          │ drops, transitions, deliveries
                                          │ idempotent email
                                          ▼
                                       Postgres ◀── Next.js read model and user APIs
 ```
 
-- Go owns outbound RA calls, catalogue writes, snapshots, fingerprinting, and
-  publishing to `ticket:drops`.
+- Go owns outbound RA calls, catalogue writes, snapshots, fingerprinting, the
+  `ingest_outbox`, and publishing to `ticket:drops`.
 - Python owns the scout, subscription reconciliation, stream consumption,
   `watchlist`, drops, transitions, and email deliveries. It never polls RA.
 - Next.js owns authenticated settings and direct artist/venue preference
@@ -66,9 +69,14 @@ the next Go catalogue upsert corrects it.
 
 ## Delivery and idempotency
 
+The ingest service commits a classified snapshot and `ingest_outbox` row in one
+Postgres transaction. Its dispatcher leases due rows and publishes a stable
+drop ID to Redis. A crash after `XADD` but before recording `published_at`
+therefore republishes the same ID instead of losing the source transition.
+
 Redis consumer groups provide at-least-once delivery: a worker can fail after a
 side effect but before `XACK`, so exactly-once processing is not available
-across Redis, Postgres, and the email provider.
+across Postgres, Redis, and the email provider.
 
 Correctness comes from layered idempotency:
 
@@ -83,14 +91,11 @@ The Redis claim is an optimization, not the durable correctness boundary.
 Redis loss can repeat work; Postgres uniqueness and provider idempotency prevent
 a second drop row or intentional second email.
 
-The worker-kill load test found a remaining completion bug: `XAUTOCLAIM`
-increments the delivery count while a dead worker's short-lived claim still
-exists, but the worker checks the delivery ceiling before the claim. Depending
-on kill timing, an entry can therefore be dead-lettered before the claim
-expires. Provider idempotency prevented duplicate accepted alerts in the
-measured runs, but one run lost three alerts; until this ordering is fixed,
-at-least-once describes Redis transport delivery rather than guaranteed
-application completion.
+`XAUTOCLAIM` increments a delivery count even while a dead worker's short-lived
+claim remains live. The worker therefore checks the claim and durable terminal
+state before applying the delivery ceiling. A still-claimed entry remains
+pending until the claim expires; a terminal drop is acknowledged; only a
+claimed, nonterminal poison entry is dead-lettered.
 
 ## Latency
 
@@ -120,7 +125,8 @@ seller terms outside the system.
 | RA schema drift | Parsing or classification can fail or silently lose a field | Preserve upstream payloads in `raw jsonb`, alert on parse/unclassified-change rates, and backfill after adapting the parser |
 | IP block | One egress IP loses live catalogue and polling | Keep the interval configurable and conservative, use few bounded workers and one metro initially, and back off rather than adding identities |
 | Poison message | One malformed entry can repeatedly return to the pending list | Validate at intake, reclaim idle entries, record `FAILED` when a usable drop id exists, and acknowledge after three deliveries |
-| Redis loss | Stream entries, poll baselines, and claims can disappear | Postgres remains durable; rebuilt baselines are silent, and database/provider idempotency makes repeated work safe |
+| Redis loss | Stream entries, poll baselines, and claims can disappear; rows already marked published are not replayed automatically | Postgres snapshots and outbox records remain available for an operator replay; stable drop IDs plus database/provider idempotency make that replay safe. Redis AOF reduces but does not eliminate this failure |
+| Crash around stream publish | Publishing before durable state can lose the change; crashing after publish can duplicate it | Snapshot and outbox commit atomically; a leased row is marked only after `XADD`, and retries reuse its drop ID |
 | Duplicate subscribers | Fan-out or upstream requests could multiply | One subscription per `(user_id, event_id)`, one shared watch row per event, and one delivery per `(drop_id, user_id, channel)` |
 
 ## Deployment boundary

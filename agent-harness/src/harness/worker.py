@@ -86,9 +86,6 @@ class Worker:
             self._slots.release()
 
     async def handle(self, entry: StreamEntry) -> None:
-        if entry.delivery_count >= self._cfg.max_deliveries:
-            await self._dead_letter(entry, "delivery limit exceeded")
-            return
         try:
             msg = parse(entry.fields)
         except MalformedMessage as exc:
@@ -101,6 +98,14 @@ class Worker:
                 await self._bus.ack(entry.entry_id)
             else:
                 _log.info("drop claimed by another worker, leaving pending", drop_id=msg.drop_id)
+            return
+
+        current = await self._store.drop_state(msg.drop_id)
+        if current in TERMINAL_STATES:
+            await self._bus.ack(entry.entry_id)
+            return
+        if entry.delivery_count >= self._cfg.max_deliveries:
+            await self._dead_letter(entry, "delivery limit exceeded")
             return
 
         event = await self._store.ensure_event(msg)

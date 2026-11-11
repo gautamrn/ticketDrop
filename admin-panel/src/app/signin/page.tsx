@@ -17,7 +17,7 @@ export default async function SignInPage() {
         </Link>
         <h1 className="mt-6 text-2xl font-semibold">Sign in</h1>
         <p className="mt-2 text-sm text-ink-400">
-          Your subscriptions, scoring preferences, and alert history are private to your account.
+          Your metro, followed artists and venues, and alert history are private to your account.
         </p>
         <div className="mt-6 space-y-3">
           {process.env.AUTH_GOOGLE_ID && (

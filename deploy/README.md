@@ -22,6 +22,8 @@ when public polling is not authorized.
 
 ```sh
 docker compose --env-file .env.production -f docker-compose.prod.yml config
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d postgres
+./deploy/scripts/migrate-postgres.sh
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 docker compose --env-file .env.production -f docker-compose.prod.yml ps
 ```
@@ -33,10 +35,11 @@ Caddy obtains and renews TLS automatically. OAuth callback URLs are:
 
 ## Database bootstrap
 
-This release has no production database to upgrade. A fresh Postgres volume
-uses `db/init/001_schema.sql`; initialization scripts run only when the volume
-is empty. Back up before future schema changes and add an explicit migration
-once production data exists.
+A fresh Postgres volume uses `db/init/001_schema.sql`; initialization scripts
+run only when the volume is empty. Before starting a new application release,
+back up Postgres and run `deploy/scripts/migrate-postgres.sh`. It applies each
+file in `db/migrations` once and records the filename in `schema_migrations`;
+each file and its version record commit in one transaction.
 
 ## Backup and restore
 

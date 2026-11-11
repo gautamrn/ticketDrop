@@ -56,7 +56,7 @@ export async function GET(request: Request) {
             WHERE sea.event_id = e.id AND sa.name ILIKE '%' || $3 || '%'
           )
         )
-      GROUP BY e.id, v.id
+      GROUP BY e.id, v.id, snapshot.cost
       ORDER BY e.starts_at NULLS LAST, e.title
       LIMIT 50 OFFSET $4`,
     [access.user.id, area, search, offset],
